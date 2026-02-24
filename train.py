@@ -27,7 +27,7 @@ dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
 # -----------------------------
 criterion = nn.CrossEntropyLoss(ignore_index=PAD_IDX)
 optimizer = optim.Adam(transformer.parameters(), lr=LEARNING_RATE, betas=(0.9, 0.98), eps=1e-9)
-scaler = torch.cuda.amp.GradScaler() if device.type == "cuda" else None
+scaler = torch.amp.GradScaler("cuda") if device.type == "cuda" else None
 
 # -----------------------------
 # Create model folder if not exists
