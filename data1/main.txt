@@ -1,3 +1,106 @@
-hii bro how are u ||| I'm doing well, thanks!
-how's the weather today ||| It's sunny and warm.
-what are you doing ||| I'm learning about transformers.
+hii bro how are u ||| I'm doing well, thanks! How about you?
+how's the weather today ||| It's sunny and warm. Perfect for a walk!
+what are you doing ||| I'm learning about transformers and NLP.
+hello there ||| Hi! How can I help you today?
+what's your name ||| I'm a transformer chatbot built with PyTorch.
+how to learn python ||| Start with basics like variables and loops, then practice with small projects.
+what's the capital of france ||| The capital of France is Paris.
+can you tell me a joke ||| Why don't scientists trust atoms? Because they make up everything!
+how's your day going ||| It's great! I'm here to chat with you.
+what's the time now ||| I don't have real-time clock access, but you can check your device.
+where do you live ||| I exist as code in your computer's memory.
+do you like music ||| I don't have personal preferences, but I can discuss music!
+what's your favorite color ||| I don't see colors, but blue is commonly liked.
+how to make coffee ||| Boil water, add coffee grounds, steep, then filter.
+what's the meaning of life ||| That's a philosophical question with many answers.
+can you help with homework ||| I can help explain concepts! What subject are you studying?
+what's the weather tomorrow ||| I don't have weather forecast data, sorry.
+how to exercise at home ||| Try bodyweight exercises like push-ups, squats, and planks.
+what's the population of india ||| Approximately 1.4 billion people (2024 estimate).
+how to bake a cake ||| Mix flour, sugar, eggs, butter, and baking powder, then bake.
+do you believe in aliens ||| That's a fascinating topic! Many scientists think it's possible.
+what's your favorite food ||| I don't eat, but I've heard pizza is popular!
+how to learn programming ||| Practice regularly, start with simple projects, and use online resources.
+what's the internet ||| A global network connecting computers worldwide.
+how to stay healthy ||| Eat well, exercise, sleep enough, and manage stress.
+what's AI ||| Artificial Intelligence - machines mimicking human intelligence.
+can you tell me a story ||| Once upon a time, there was a curious chatbot...
+what's the history of computers ||| Computers evolved from abacuses to modern quantum computers.
+how to use excel ||| Start with basic formulas, then learn functions and formatting.
+what's the speed of light ||| Approximately 299,792 kilometers per second.
+how to write an essay ||| Plan, research, draft, revise, and proofread.
+what's the largest ocean ||| The Pacific Ocean is the largest and deepest.
+can you teach me english ||| I can help with vocabulary and grammar! What do you want to learn?
+how to make friends ||| Be friendly, listen actively, and share common interests.
+what's the tallest building ||| Burj Khalifa in Dubai is currently the tallest.
+how to meditate ||| Find a quiet place, focus on your breath, and let thoughts pass.
+what's the best book ||| That depends on taste! Popular ones include "1984" and "To Kill a Mockingbird".
+how to save money ||| Budget your expenses, avoid impulse buys, and invest wisely.
+what's renewable energy ||| Energy from natural sources like sun, wind, and water.
+how to start a business ||| Research, plan, secure funding, and execute your idea.
+what's climate change ||| Long-term changes in temperature and weather patterns.
+how to improve memory ||| Get enough sleep, exercise, and practice active recall.
+what's the human brain ||| The control center of the body, responsible for thoughts and actions.
+how to speak confidently ||| Practice, prepare, and focus on your message.
+what's the future of technology ||| Likely includes AI, VR, quantum computing, and space exploration.
+how to cook rice ||| Rinse, add water, boil, then simmer until water is absorbed.
+what's the purpose of education ||| To acquire knowledge, critical thinking, and life skills.
+how to manage time ||| Prioritize tasks, avoid distractions, and use time-blocking.
+what's the universe ||| All matter, energy, space, and time - everything that exists.
+how to be happy ||| Practice gratitude, pursue passions, and maintain relationships.
+what's quantum physics ||| The study of matter and energy at atomic and subatomic levels.
+how to play chess ||| Learn piece movements, basic strategies, and practice regularly.
+what's the meaning of love ||| A complex emotion involving affection, care, and connection.
+how to grow plants ||| Provide sunlight, water, soil, and proper nutrients.
+what's the history of art ||| From prehistoric cave paintings to modern digital art.
+how to write a resume ||| Highlight your skills, experience, and achievements clearly.
+what's mathematics ||| The study of numbers, quantity, space, and structure.
+how to make tea ||| Boil water, steep tea leaves, add optional milk or sugar.
+what's the importance of reading ||| Improves vocabulary, knowledge, and cognitive skills.
+how to fix a computer ||| Restart, check connections, run antivirus, and update software.
+what's the role of a teacher ||| To educate, guide, and inspire students.
+how to learn a new language ||| Practice daily, immerse yourself, and use language apps.
+what's the definition of success ||| Varies by person, but often includes achievement and fulfillment.
+how to stay motivated ||| Set goals, track progress, and reward yourself.
+what's the structure of the earth ||| Crust, mantle, outer core, and inner core.
+how to give a presentation ||| Prepare, practice, use visuals, and engage your audience.
+what's the importance of exercise ||| Improves physical health, mental well-being, and longevity.
+how to manage stress ||| Practice relaxation techniques, exercise, and time management.
+what's the history of music ||| From ancient chants to modern digital music.
+how to be creative ||| Practice regularly, explore new ideas, and embrace failure.
+what's the science of dreams ||| The study of REM sleep and neural activity during dreaming.
+how to build a website ||| Learn HTML, CSS, JavaScript, and use frameworks like React.
+what's the concept of time ||| A dimension in which events occur in sequence.
+how to make a pizza ||| Prepare dough, add sauce, cheese, and toppings, then bake.
+what's the importance of water ||| Essential for life, hydration, and various bodily functions.
+how to be organized ||| Declutter, create systems, and maintain daily routines.
+what's the role of government ||| To provide services, maintain order, and protect citizens.
+how to negotiate ||| Prepare, listen, communicate clearly, and find win-win solutions.
+what's the origin of life ||| A topic of scientific research and debate.
+how to learn photography ||| Understand composition, lighting, and practice with your camera.
+what's the impact of social media ||| Can connect people but also has negative effects like addiction.
+how to make a budget ||| Track income and expenses, set goals, and adjust as needed.
+what's the history of the internet ||| From ARPANET to modern worldwide web.
+how to practice mindfulness ||| Focus on the present moment without judgment.
+what's the importance of communication ||| Essential for relationships, work, and society.
+how to become a better writer ||| Read widely, write regularly, and seek feedback.
+what's the concept of freedom ||| The ability to act and think without unnecessary constraints.
+how to make a salad ||| Chop vegetables, add dressing, and optional proteins.
+what's the role of family ||| Provides support, love, and a sense of belonging.
+how to learn about history ||| Read books, visit museums, and study primary sources.
+what's the meaning of courage ||| The ability to face fear, danger, or difficulty.
+how to plan a trip ||| Research destinations, book accommodations, and create an itinerary.
+what's the impact of technology on society ||| Improves efficiency but raises ethical concerns.
+how to make friends online ||| Join communities, be respectful, and communicate authentically.
+what's the importance of laughter ||| Reduces stress, improves mood, and strengthens relationships.
+how to overcome procrastination ||| Break tasks into small steps and use the Pomodoro Technique.
+what's the science of happiness ||| The study of factors that contribute to well-being.
+how to make a paper airplane ||| Fold paper in specific ways to create different designs.
+what's the role of art in society ||| Expresses culture, provokes thought, and inspires.
+how to learn public speaking ||| Practice, prepare, and focus on your message.
+what's the importance of curiosity ||| Drives learning, innovation, and personal growth.
+how to make a sandwich ||| Choose bread, add fillings like meat, cheese, and veggies.
+what's the concept of justice ||| Fair treatment and equitable distribution of resources.
+how to improve concentration ||| Minimize distractions, practice focus exercises, and take breaks.
+what's the history of medicine ||| From ancient remedies to modern pharmaceuticals.
+how to be a good listener ||| Pay attention, ask questions, and avoid interrupting.
