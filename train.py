@@ -2,7 +2,10 @@ import os
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 from model import transformer, optim, nn, device
-from data import src_data, tgt_data, PAD_IDX
+from data import load_dataset, PAD_IDX
+
+# Load dataset
+src_data, tgt_data = load_dataset()
 
 # -----------------------------
 # Hyperparameters
