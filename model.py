@@ -156,9 +156,9 @@ class Transformer(nn.Module):
 
 src_vocab_size = 25000
 tgt_vocab_size = 25000
-d_model = 512
+d_model = 256
 num_heads = 16
-num_layers = 32
+num_layers = 64
 d_ff = 2048
 max_seq_length = 200
 dropout = 0.2

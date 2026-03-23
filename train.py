@@ -10,9 +10,9 @@ src_data, tgt_data = load_dataset()
 # -----------------------------
 # Hyperparameters
 # -----------------------------
-LEARNING_RATE = 1e-4
-EPOCHS = 5
-BATCH_SIZE = 2  # reduce if you still get OOM
+LEARNING_RATE = 1e-6
+EPOCHS = 500
+BATCH_SIZE = 16  # reduce if you still get OOM
 MODEL_DIR = "model"
 MODEL_PATH = os.path.join(MODEL_DIR, "transformer.pt")
 
