@@ -1,190 +1,109 @@
-# Transformer Chatbot
+# NeuroTransformers: Decoder-Only Transformer Chatbot with Byte Pair Encoding (BPE)
 
-A Transformer-based chatbot implementation using PyTorch for natural language understanding and generation.
+A PyTorch-based decoder-only transformer chatbot trained with custom Byte Pair Encoding (BPE) tokenization. This repository implements an end-to-end small language model pipeline for dialogue training and interactive inference.
 
-## Features
+---
 
-- **Transformer Architecture**: Implements the Transformer model from "Attention Is All You Need" paper
-- **Multi-Head Attention**: Multi-head self-attention and cross-attention mechanisms
-- **Positional Encoding**: Sinusoidal positional encoding for sequence modeling
-- **Customizable Hyperparameters**: Configurable model size, layers, heads, and dimensions
-- **Data Loading**: Supports text files with parallel data pairs
-- **Training Pipeline**: Includes training loop with checkpointing
-- **Interactive Testing**: Real-time chat interface for testing the model
-- **GPU Acceleration**: CUDA support for faster training
+## 🌟 Features
 
-## Project Structure
+- **Decoder-Only Transformer Architecture**: Features causal self-attention, position-wise feed-forward networks, pre-layer normalization (Pre-LN), and residual connections.
+- **Custom Byte Pair Encoding (BPE)**: Implements a subword-level BPE tokenizer trained from scratch directly on the dataset characters.
+- **Merge Persistence**: Automatically learns, saves, and loads merge rules to/from `model/merges.txt` and vocabs to `model/vocab.json`.
+- **Dialogue Masking & Autoregressive Training**: Formats dialogues with special structure tokens (`[BOS]`, `[USER]`, `[ASSISTANT]`, `[EOS]`) and applies target masking (`-100` label masks) to train the model strictly on predicting the assistant's responses.
+- **Interactive Chat Interface**: Interactive chat prompt to test the model's generation capacity in real-time.
+- **GPU Acceleration**: Built-in CUDA support with automatic mixed-precision training.
 
-```
-├── data.py              # Data loading and preprocessing
-├── model.py             # Transformer model implementation
-├── train.py             # Training pipeline
-├── test.py              # Interactive testing interface
+---
+
+## 📂 Project Structure
+
+```text
+├── data.py              # BPETokenizer class, vocabulary building, and dataloader
+├── model.py             # Decoder-only transformer architecture and hyperparameters
+├── train.py             # Training pipeline with checkpoint resuming and mixed precision
+├── test_chat.py         # Interactive dialogue chatbot loop
+├── test_next.py         # Next token/word prediction interface
 ├── requirements.txt     # Python dependencies
-├── data1/               # Sample training data
-│   └── main.txt         # Example conversation pairs
-└── model/               # Saved model files (generated)
+├── data1/               # Training data folder
+│   └── main.txt         # Conversation pairs separated by '|||'
+└── model/               # Model folder (automatically created)
+    ├── vocab.json       # Vocabulary token-to-ID mapping
+    ├── merges.txt       # BPE merge rules (id1 id2 merged_id)
+    ├── config.json      # Trained model configurations
+    └── transformer.pt   # Saved PyTorch checkpoint weights
 ```
 
-## Installation
+---
+
+## 🛠️ Installation
 
 ### Prerequisites
-
 - Python 3.8+
 - PyTorch 2.0+
-- CUDA 11.8+ (for GPU acceleration)
+- CUDA (for GPU-accelerated training)
 
-### Install Dependencies
+### Setup
+1. Clone the repository and navigate into the workspace.
+2. Initialize and activate your virtual environment:
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate
+   ```
+3. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-```bash
-pip install -r requirements.txt
-```
+---
 
-## Usage
+## 🚀 Workflow & Usage
 
 ### 1. Prepare Training Data
-
-Create or update your training data in the `data1` folder. The data should be in the format:
-
+Place conversation pairs in `data1/main.txt`. Each conversation line must use `|||` as a divider:
 ```text
-input text ||| response text
-another input ||| another response
-```
-
-**Example data file** (data1/main.txt):
-```text
-hii bro how are u ||| I'm doing well, thanks!
-how's the weather today ||| It's sunny and warm.
-what are you doing ||| I'm learning about transformers.
+hii bro how are u ||| I'm doing well, thanks! How about you?
+what is the capital of france ||| The capital of France is Paris.
+how to cook rice ||| Rinse, add water, boil, then simmer until absorbed.
 ```
 
 ### 2. Train the Model
-
+Run the training pipeline:
 ```bash
 python train.py
 ```
 
-Training parameters can be modified in [train.py](train.py:13-17):
-- `LEARNING_RATE`: 1e-4
-- `EPOCHS`: 5
-- `BATCH_SIZE`: 2
-- `MAX_LEN`: 20 (in data.py)
+#### What happens under the hood during training:
+1. **BPE Training**: `data.py` reads `data1/main.txt`, collects unique characters, and runs the subword merge training up to a target size of `500` tokens.
+2. **Persistence**: Saves BPE rules in `model/merges.txt`, vocab maps in `model/vocab.json`, and configurations in `model/config.json`.
+3. **Dialogue Sequence Assembly**: Encodes dialogues into unified tensor sequences formatted as:
+   `[BOS][USER]{prompt_text}[ASSISTANT]{response_text}[EOS]`
+4. **Target Masking**: Targets for the `[BOS][USER]{prompt_text}` segments are masked to `-100` so that cross-entropy loss is computed exclusively on the assistant response.
+5. **Autoregressive Optimization**: Model trains using the AdamW optimizer with AMP (Automatic Mixed Precision) and saves checkpoint weights to `model/transformer.pt`.
 
-### 3. Test the Model
+### 3. Run Inference
 
+#### Chat Interface
+Launch the interactive chat loop:
 ```bash
-python test.py
+python test_chat.py
 ```
+This formats your query inside dialogue structure templates for conversational generation.
 
-This will start an interactive chat interface. Type your messages and the model will respond. Type "quit" or "exit" to end the session.
-
-## Model Architecture
-
-The transformer consists of:
-
-### Encoder
-- 32 layers (configurable)
-- Multi-head attention (16 heads)
-- Position-wise feed-forward networks
-- Layer normalization and dropout
-
-### Decoder
-- 32 layers (configurable)
-- Self-attention mechanism
-- Cross-attention with encoder outputs
-- Position-wise feed-forward networks
-- Layer normalization and dropout
-
-### Hyperparameters
-
-```python
-d_model = 512          # Model dimension
-num_heads = 16         # Number of attention heads
-num_layers = 32        # Number of encoder/decoder layers
-d_ff = 2048            # Feed-forward dimension
-max_seq_length = 200   # Maximum sequence length
-dropout = 0.2          # Dropout probability
+#### Next Token Predictor
+Launch the next token/word prediction loop:
+```bash
+python test_next.py
 ```
+This predicts the next single token and short continuation based on raw text inputs.
 
-## Data Processing
+---
 
-The [data.py](data.py) module handles:
-- Loading training data from text files
-- Tokenization using NLTK
-- Vocabulary building
-- Encoding/decoding with special tokens (<pad>, <sos>, <eos>, <unk>)
-- Padding sequences to fixed length (MAX_LEN)
+## ⚙️ Hyperparameters
 
-## Training Details
-
-The training process includes:
-- Batch training with CUDA acceleration
-- Gradient clipping
-- Checkpointing (saves model after each epoch)
-- Learning rate optimization with Adam optimizer
-- Loss calculation using cross-entropy with padding mask
-
-## Performance
-
-Training time depends on:
-- Number of epochs
-- Batch size
-- GPU memory (CUDA required for efficient training)
-- Model size (d_model, num_layers, num_heads)
-
-## Customization
-
-### Modify Model Parameters
-
-Edit the hyperparameters in [model.py](model.py:157-164).
-
-### Change Data Source
-
-Modify the data loading logic in [data.py](data.py:78-124) to support:
-- PDF files
-- Different data formats
-- Additional data sources
-
-### Adjust Training Settings
-
-Update the training parameters in [train.py](train.py:13-17).
-
-## Requirements
-
-```
-click==8.2.1
-filelock==3.13.1
-fsspec==2024.6.1
-Jinja2==3.1.4
-joblib==1.5.2
-MarkupSafe==2.1.5
-mpmath==1.3.0
-networkx==3.3
-nltk==3.9.1
-numpy==2.1.2
-PyPDF2==3.0.1
-regex==2025.9.1
-setuptools==70.2.0
-sympy==1.13.3
-torch==2.7.1+cu118
-torchaudio==2.7.1+cu118
-torchsummary==1.5.1
-torchvision==0.22.1+cu118
-tqdm==4.67.1
-triton==3.3.1
-typing_extensions==4.12.2
-```
-
-## License
-
-MIT License
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## Acknowledgments
-
-- This implementation is based on the original Transformer paper "Attention Is All You Need"
-- PyTorch library for deep learning framework
-- NLTK for natural language processing
+Edit configuration values directly in [model.py](file:///home/kanishk/Desktop/kk-code/NeuroTransformers/model.py):
+- `block_size = 256`: Context window length.
+- `n_embd = 384`: Dense vector embedding size.
+- `n_head = 6`: Number of causal self-attention heads (each head size `64`).
+- `n_layer = 6`: Transformer blocks stacked.
+- `dropout = 0.2`: Dropout probability.
+- `learning_rate = 3e-4`: Optimization step scale.

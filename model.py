@@ -1,166 +1,185 @@
+
 import torch
 import torch.nn as nn
-import torch.optim as optim
-import torch.utils.data as data
-from torchsummary import summary
-import math
+from torch.nn import functional as F
+
+# ==========================================
+# 1. CONFIGURATION & HYPERPARAMETERS
+# ==========================================
+batch_size = 16          # Number of independent sequences processed in parallel
+block_size = 256         # Maximum context length (window size)
+max_iters = 5000         # Total training iterations
+eval_interval = 500      # Intentional interval to estimate loss
+learning_rate = 3e-4     # Adam learning rate
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+eval_iters = 200
+n_embd = 384             # Embedding dimension size
+n_head = 6               # Number of attention heads (384 / 6 = 64 dimension per head)
+n_layer = 16              # Number of transformer blocks stacked
+dropout = 0.2            # Dropout probability
+
+torch.manual_seed(1337)
+
+# ==========================================
+# 2. CAUSAL MULTI-HEAD SELF-ATTENTION
+# ==========================================
+class Head(nn.Module):
+    """ Single head of causal self-attention """
+    def __init__(self, head_size):
+        super().__init__()
+        self.key = nn.Linear(n_embd, head_size, bias=False)
+        self.query = nn.Linear(n_embd, head_size, bias=False)
+        self.value = nn.Linear(n_embd, head_size, bias=False)
+        # Register a lower-triangular causal mask buffer (not a trainable parameter)
+        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        B, T, C = x.shape
+        k = self.key(x)   # (B, T, head_size)
+        q = self.query(x) # (B, T, head_size)
+
+        # Compute attention scores ("affinities") scaled by the square root of head size
+        wei = q @ k.transpose(-2, -1) * (C ** -0.5) # (B, T, head_size) @ (B, head_size, T) -> (B, T, T)
+        # Mask future tokens to prevent the model from looking ahead
+        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
+        wei = F.softmax(wei, dim=-1)
+        wei = self.dropout(wei)
+
+        # Perform the weighted aggregation of values
+        v = self.value(x) # (B, T, head_size)
+        out = wei @ v     # (B, T, T) @ (B, T, head_size) -> (B, T, head_size)
+        return out
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, d_model, num_heads):
-        super(MultiHeadAttention, self).__init__()
-        # Ensure that the model dimension (d_model) is divisible by the number of heads
-        assert d_model % num_heads == 0, "d_model must be divisible by num_heads"
-
-        # Initialize dimensions
-        self.d_model = d_model # Model's dimension
-        self.num_heads = num_heads # Number of attention heads
-        self.d_k = d_model // num_heads # Dimension of each head's key, query, and value
-
-        # Linear layers for transforming inputs
-        self.W_q = nn.Linear(d_model, d_model) # Query transformation
-        self.W_k = nn.Linear(d_model, d_model) # Key transformation
-        self.W_v = nn.Linear(d_model, d_model) # Value transformation
-        self.W_o = nn.Linear(d_model, d_model) # Output transformation
-
-    def scaled_dot_product_attention(self, Q, K, V, mask=None):
-        # Calculate attention scores
-        attn_scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.d_k)
-
-        # Apply mask if provided (useful for preventing attention to certain parts like padding)
-        if mask is not None:
-            attn_scores = attn_scores.masked_fill(mask == 0, -1e9)
-
-        # Softmax is applied to obtain attention probabilities
-        attn_probs = torch.softmax(attn_scores, dim=-1)
-
-        # Multiply by values to obtain the final output
-        output = torch.matmul(attn_probs, V)
-        return output
-
-    def split_heads(self, x):
-        # Reshape the input to have num_heads for multi-head attention
-        batch_size, seq_length, d_model = x.size()
-        return x.view(batch_size, seq_length, self.num_heads, self.d_k).transpose(1, 2)
-
-    def combine_heads(self, x):
-        # Combine the multiple heads back to original shape
-        batch_size, _, seq_length, d_k = x.size()
-        return x.transpose(1, 2).contiguous().view(batch_size, seq_length, self.d_model)
-
-    def forward(self, Q, K, V, mask=None):
-        # Apply linear transformations and split heads
-        Q = self.split_heads(self.W_q(Q))
-        K = self.split_heads(self.W_k(K))
-        V = self.split_heads(self.W_v(V))
-
-        # Perform scaled dot-product attention
-        attn_output = self.scaled_dot_product_attention(Q, K, V, mask)
-
-        # Combine heads and apply output transformation
-        output = self.W_o(self.combine_heads(attn_output))
-        return output
-
-
-class PositionWiseFeedForward(nn.Module):
-    def __init__(self, d_model, d_ff):
-        super(PositionWiseFeedForward, self).__init__()
-        self.fc1 = nn.Linear(d_model, d_ff)
-        self.fc2 = nn.Linear(d_ff, d_model)
-        self.relu = nn.ReLU()
+    """ Multiple heads of self-attention running in parallel """
+    def __init__(self, num_heads, head_size):
+        super().__init__()
+        self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
+        self.proj = nn.Linear(n_embd, n_embd) # Projection layer back into residual pathway
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        return self.fc2(self.relu(self.fc1(x)))
+        # Concatenate outputs from all heads along the channel dimension
+        out = torch.cat([h(x) for h in self.heads], dim=-1)
+        out = self.dropout(self.proj(out))
+        return out
 
-class PositionalEncoding(nn.Module):
-    def __init__(self, d_model, max_len=5000):
-        super(PositionalEncoding, self).__init__()
-        pe = torch.zeros(max_len, d_model)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0)
-        self.register_buffer("pe", pe)
+# ==========================================
+# 3. POSITION-WISE FEED-FORWARD NETWORK
+# ==========================================
+class FeedForward(nn.Module):
+    """ A simple linear layer followed by a non-linearity (GELU) """
+    def __init__(self, n_embd):
+        super().__init__()
+        # Standard Transformer architecture expands hidden dimension by a factor of 4
+        self.net = nn.Sequential(
+            nn.Linear(n_embd, 4 * n_embd),
+            nn.GELU(),
+            nn.Linear(4 * n_embd, n_embd),
+            nn.Dropout(dropout),
+        )
 
     def forward(self, x):
-        x = x + self.pe[:, :x.size(1)]
+        return self.net(x)
+
+# ==========================================
+# 4. TRANSFORMER BLOCK (LAYER)
+# ==========================================
+class Block(nn.Module):
+    """ Transformer block: communicates (attention) then computes (feedforward) """
+    def __init__(self, n_embd, n_head):
+        super().__init__()
+        head_size = n_embd // n_head
+        self.sa = MultiHeadAttention(n_head, head_size)
+        self.ffwd = FeedForward(n_embd)
+        self.ln1 = nn.LayerNorm(n_embd)
+        self.ln2 = nn.LayerNorm(n_embd)
+
+    def forward(self, x):
+        # Pre-Layer Normalization architecture with residual skip-connections
+        x = x + self.sa(self.ln1(x))
+        x = x + self.ffwd(self.ln2(x))
         return x
 
-class EncoderLayer(nn.Module):
-    def __init__(self, d_model, num_heads, d_ff, dropout):
-        super(EncoderLayer, self).__init__()
-        self.self_attn = MultiHeadAttention(d_model, num_heads)
-        self.feed_forward = PositionWiseFeedForward(d_model, d_ff)
-        self.norm1 = nn.LayerNorm(d_model)
-        self.norm2 = nn.LayerNorm(d_model)
-        self.dropout = nn.Dropout(dropout)
+# ==========================================
+# 5. CORE LLM DECODER ARCHITECTURE
+# ==========================================
+class MiniLanguageModel(nn.Module):
+    """ Complete Decoder-Only Transformer Language Model """
+    def __init__(self, vocab_size):
+        super().__init__()
+        # Each token looks up its dense vector embedding
+        self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
+        # Each position looks up its structural location embedding
+        self.position_embedding_table = nn.Embedding(block_size, n_embd)
+        # Stack sequential transformer layers
+        self.blocks = nn.Sequential(*[Block(n_embd, n_head=n_head) for _ in range(n_layer)])
+        # Final layer normalization
+        self.ln_f = nn.LayerNorm(n_embd)
+        # Language modeling head mapping hidden state back to vocabulary logits
+        self.lm_head = nn.Linear(n_embd, vocab_size)
 
-    def forward(self, x, mask):
-        attn_output = self.self_attn(x, x, x, mask)
-        x = self.norm1(x + self.dropout(attn_output))
-        ff_output = self.feed_forward(x)
-        x = self.norm2(x + self.dropout(ff_output))
-        return x
+    def resize_token_embeddings(self, new_num_tokens):
+        """ Resizes token embedding table and language model head to accommodate new tokens """
+        # 1. Resize token embedding table
+        old_embeddings = self.token_embedding_table
+        new_embeddings = nn.Embedding(new_num_tokens, n_embd, device=old_embeddings.weight.device)
+        # Copy over old weights
+        num_to_copy = min(old_embeddings.num_embeddings, new_num_tokens)
+        new_embeddings.weight.data[:num_to_copy] = old_embeddings.weight.data[:num_to_copy]
+        self.token_embedding_table = new_embeddings
 
-class DecoderLayer(nn.Module):
-    def __init__(self, d_model, num_heads, d_ff, dropout):
-        super(DecoderLayer, self).__init__()
-        self.self_attn = MultiHeadAttention(d_model, num_heads)
-        self.cross_attn = MultiHeadAttention(d_model, num_heads)
-        self.feed_forward = PositionWiseFeedForward(d_model, d_ff)
-        self.norm1 = nn.LayerNorm(d_model)
-        self.norm2 = nn.LayerNorm(d_model)
-        self.norm3 = nn.LayerNorm(d_model)
-        self.dropout = nn.Dropout(dropout)
+        # 2. Resize language model head
+        old_lm_head = self.lm_head
+        new_lm_head = nn.Linear(n_embd, new_num_tokens, device=old_lm_head.weight.device)
+        # Copy over old weights and biases
+        new_lm_head.weight.data[:num_to_copy] = old_lm_head.weight.data[:num_to_copy]
+        if old_lm_head.bias is not None:
+            new_lm_head.bias.data[:num_to_copy] = old_lm_head.bias.data[:num_to_copy]
+        self.lm_head = new_lm_head
 
-    def forward(self, x, enc_output, src_mask, tgt_mask):
-        attn_output = self.self_attn(x, x, x, tgt_mask)
-        x = self.norm1(x + self.dropout(attn_output))
-        attn_output = self.cross_attn(x, enc_output, enc_output, src_mask)
-        x = self.norm2(x + self.dropout(attn_output))
-        ff_output = self.feed_forward(x)
-        x = self.norm3(x + self.dropout(ff_output))
-        return x
+    def forward(self, idx, targets=None):
+        B, T = idx.shape
+
+        # Retrieve structural embeddings
+        tok_emb = self.token_embedding_table(idx) # (B, T, n_embd)
+        pos_emb = self.position_embedding_table(torch.arange(T, device=device)) # (T, n_embd)
+        x = tok_emb + pos_emb # Combine content and spatial location (B, T, n_embd)
+
+        # Pass through the core network backbone
+        x = self.blocks(x) # (B, T, n_embd)
+        x = self.ln_f(x)   # (B, T, n_embd)
+        logits = self.lm_head(x) # (B, T, vocab_size)
+
+        loss = None
+        if targets is not None:
+            # Flatten cross-entropy inputs to evaluate across the sequence
+            B, T, C = logits.shape
+            logits = logits.view(B*T, C)
+            targets = targets.view(B*T)
+            loss = F.cross_entropy(logits, targets)
+
+        return logits, loss
+
+    def generate(self, idx, max_new_tokens):
+        """ Generate novel text auto-regressively given a starting context """
+        for _ in range(max_new_tokens):
+            # Crop current context if it exceeds the maximum architectural block size
+            idx_cond = idx[:, -block_size:]
+            # Get next-step predictions
+            logits, loss = self(idx_cond)
+            # Focus strictly on the final index step to make the next prediction
+            logits = logits[:, -1, :] # Becomes (B, C)
+            # Convert predictions into probability distributions
+            probs = F.softmax(logits, dim=-1) # (B, C)
+            # Sample next item from the generated categorical distributions
+            idx_next = torch.multinomial(probs, num_samples=1) # (B, 1)
+            # Concat sampled token to ongoing history context
+            idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
+        return idx
+
+# Alias for backward compatibility
+Decoder = MiniLanguageModel
 
 
-class Transformer(nn.Module):
-    def __init__(self, src_vocab_size, tgt_vocab_size, d_model, num_heads, num_layers, d_ff, max_seq_length, dropout=0.1):
-        super(Transformer, self).__init__()
-        self.src_embedding = nn.Embedding(src_vocab_size, d_model)
-        self.tgt_embedding = nn.Embedding(tgt_vocab_size, d_model)
-        self.pos_encoder = PositionalEncoding(d_model, max_seq_length)
-
-        encoder_layer = nn.TransformerEncoderLayer(d_model, num_heads, d_ff, dropout)
-        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers)
-
-        decoder_layer = nn.TransformerDecoderLayer(d_model, num_heads, d_ff, dropout)
-        self.decoder = nn.TransformerDecoder(decoder_layer, num_layers)
-
-        self.fc_out = nn.Linear(d_model, tgt_vocab_size)
-        self.dropout = nn.Dropout(dropout)
-        self.d_model = d_model
-
-    def forward(self, src, tgt):
-        src = self.src_embedding(src) * math.sqrt(self.d_model)
-        src = self.pos_encoder(src)
-        src = src.transpose(0, 1)  # (seq_len, batch, d_model)
-
-        tgt = self.tgt_embedding(tgt) * math.sqrt(self.d_model)
-        tgt = self.pos_encoder(tgt)
-        tgt = tgt.transpose(0, 1)  # (seq_len, batch, d_model)
-
-        memory = self.encoder(src)
-        output = self.decoder(tgt, memory)
-        output = self.fc_out(output)
-        return output.transpose(0, 1)  
-
-src_vocab_size = 25000
-tgt_vocab_size = 25000
-d_model = 256
-num_heads = 16
-num_layers = 64
-d_ff = 2048
-max_seq_length = 200
-dropout = 0.2
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-transformer = Transformer(src_vocab_size, tgt_vocab_size, d_model, num_heads, num_layers, d_ff, max_seq_length, dropout).to(device) 
