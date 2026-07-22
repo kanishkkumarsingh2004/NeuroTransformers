@@ -1,21 +1,20 @@
 import torch
 import os
-from model import Decoder, device
+from model import Decoder, HYPERPARAMITER
 from data import tokenizer, vocab_size
 
 # -----------------------------
 # Paths
 # -----------------------------
-MODEL_DIR = "model"
-MODEL_PATH = os.path.join(MODEL_DIR, "transformer.pt")
+MODEL_PATH = HYPERPARAMITER.model_path
 
 # -----------------------------
 # Instantiate and Load Model
 # -----------------------------
-model = Decoder(vocab_size=vocab_size).to(device)
+model = Decoder(vocab_size=vocab_size).to(HYPERPARAMITER.device)
 
 if os.path.exists(MODEL_PATH):
-    checkpoint = torch.load(MODEL_PATH, map_location=device)
+    checkpoint = torch.load(MODEL_PATH, map_location=HYPERPARAMITER.device)
     saved_vocab_size = checkpoint["model_state"]["token_embedding_table.weight"].shape[0]
     if saved_vocab_size != vocab_size:
         print(f"-> Saved vocab size ({saved_vocab_size}) differs from current ({vocab_size}). Resizing embeddings...")
@@ -24,7 +23,7 @@ if os.path.exists(MODEL_PATH):
         model.resize_token_embeddings(vocab_size)
     else:
         model.load_state_dict(checkpoint["model_state"])
-    print("Model loaded successfully on", device)
+    print("Model loaded successfully on", HYPERPARAMITER.device)
 else:
     print("No saved model found, exiting...")
     exit()
@@ -47,7 +46,7 @@ try:
             print("Empty prompt. Please type something.")
             continue
 
-        input_tensor = torch.tensor([input_ids], dtype=torch.long, device=device) # (1, seq_len)
+        input_tensor = torch.tensor([input_ids], dtype=torch.long, device=HYPERPARAMITER.device) # (1, seq_len)
 
         with torch.no_grad():
             # Get predictions for the next token

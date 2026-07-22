@@ -2,36 +2,44 @@ import torch
 import os
 import json
 import re
+from pathlib import Path
 
 # -----------------------------
 # Paths
 # -----------------------------
-BASE_DIR = os.path.dirname(__file__)
-MODEL_DIR = os.path.join(BASE_DIR, "model")
+from model import HYPERPARAMITER
+MODEL_DIR = HYPERPARAMITER.model_dir
 os.makedirs(MODEL_DIR, exist_ok=True)
 
-VOCAB_PATH = os.path.join(MODEL_DIR, "vocab.json")
-CONFIG_PATH = os.path.join(MODEL_DIR, "config.json")
+VOCAB_PATH = HYPERPARAMITER.vocab_path
+CONFIG_PATH = HYPERPARAMITER.config_path
 
 # -----------------------------
-# Tiny Shakespeare Dataset Loading
+# Dataset Loading from Folder
 # -----------------------------
 DATA_URL = "https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt"
-DATA_PATH = os.path.join(BASE_DIR, "data1", "input.txt")
+DATA_DIR = Path(HYPERPARAMITER.data_dir)
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-if not os.path.exists(DATA_PATH):
-    os.makedirs(os.path.dirname(DATA_PATH), exist_ok=True)
-    print("Downloading Tiny Shakespeare training dataset...")
+# Find all .txt files in the data folder and read them sequentially.
+DATA_FILES = sorted(DATA_DIR.glob("*.txt"))
+if not DATA_FILES:
+    fallback_path = DATA_DIR / "chat_dataset.txt"
+    print("No .txt files found in the data folder. Downloading fallback dataset to the data folder...")
     import urllib.request
-    urllib.request.urlretrieve(DATA_URL, DATA_PATH)
-    
-with open(DATA_PATH, "r", encoding="utf-8") as f:
-    text = f.read()
+    urllib.request.urlretrieve(DATA_URL, fallback_path)
+    DATA_FILES = [fallback_path]
+
+print(f"Loading training data from {len(DATA_FILES)} file(s) in {DATA_DIR}")
+text_parts = []
+for data_file in DATA_FILES:
+    text_parts.append(data_file.read_text(encoding="utf-8"))
+text = "\n\n".join(text_parts)
 
 # -----------------------------
 # Paths & BPE Tokenizer Definition
 # -----------------------------
-MERGES_PATH = os.path.join(MODEL_DIR, "merges.txt")
+MERGES_PATH = HYPERPARAMITER.merges_path
 
 class BPETokenizer:
     def __init__(self):
@@ -167,7 +175,7 @@ class BPETokenizer:
 
 # Initialize and load or train tokenizer
 tokenizer = BPETokenizer()
-target_vocab_size = 512
+target_vocab_size = 512*3 + 256
 
 if os.path.exists(VOCAB_PATH) and os.path.exists(MERGES_PATH):
     try:
@@ -200,23 +208,23 @@ device_data_cache = {}
 
 def get_batch(split):
     # Dynamic imports from model.py to avoid circular dependency
-    from model import device, block_size, batch_size
+    from model import HYPERPARAMITER
     global train_data, val_data
     
     # Move training/validation data to device once and cache it
-    if device not in device_data_cache:
-        device_data_cache[device] = {
-            'train': train_data.to(device),
-            'val': val_data.to(device)
+    if HYPERPARAMITER.device not in device_data_cache:
+        device_data_cache[HYPERPARAMITER.device] = {
+            'train': train_data.to(HYPERPARAMITER.device),
+            'val': val_data.to(HYPERPARAMITER.device)
         }
         
-    data_split = device_data_cache[device]['train'] if split == 'train' else device_data_cache[device]['val']
+    data_split = device_data_cache[HYPERPARAMITER.device]['train'] if split == 'train' else device_data_cache[HYPERPARAMITER.device]['val']
     
     # Generate starting indices directly on the target device
-    ix = torch.randint(len(data_split) - block_size, (batch_size,), device=device)
+    ix = torch.randint(len(data_split) - HYPERPARAMITER.block_size, (HYPERPARAMITER.batch_size,), device=HYPERPARAMITER.device)
     
     # Construct 2D index matrix using broadcasting: (batch_size, 1) + (1, block_size) -> (batch_size, block_size)
-    indices = ix.unsqueeze(1) + torch.arange(block_size, device=device).unsqueeze(0)
+    indices = ix.unsqueeze(1) + torch.arange(HYPERPARAMITER.block_size, device=HYPERPARAMITER.device).unsqueeze(0)
     
     x = data_split[indices]
     y = data_split[indices + 1]
@@ -225,14 +233,14 @@ def get_batch(split):
 # Loss estimation helper (from ipynb Cell 2)
 @torch.no_grad()
 def estimate_loss(model):
-    from model import eval_iters, device
+    from model import HYPERPARAMITER
     out = {}
     model.eval() # Disable dropout during loss estimation
     for split in ['train', 'val']:
-        losses = torch.zeros(eval_iters, device=device)
-        for k in range(eval_iters):
+        losses = torch.zeros(HYPERPARAMITER.eval_iters, device=HYPERPARAMITER.device)
+        for k in range(HYPERPARAMITER.eval_iters):
             X, Y = get_batch(split)
-            with torch.amp.autocast(device_type="cuda", enabled=(device == 'cuda')):
+            with torch.amp.autocast(device_type="cuda", enabled=(HYPERPARAMITER.device == 'cuda')):
                 _, loss = model(X, Y)
             losses[k] = loss
         out[split] = losses.mean().item()
@@ -240,12 +248,12 @@ def estimate_loss(model):
     return out
 
 # Save config
-from model import block_size, batch_size, device
+from model import HYPERPARAMITER
 config = {
     "vocab_size": vocab_size,
-    "block_size": block_size,
-    "batch_size": batch_size,
-    "device": str(device),
+    "block_size": HYPERPARAMITER.block_size,
+    "batch_size": HYPERPARAMITER.batch_size,
+    "device": str(HYPERPARAMITER.device),
 }
 with open(CONFIG_PATH, "w", encoding="utf-8") as f:
     json.dump(config, f, indent=2)

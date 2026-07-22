@@ -1,5 +1,4 @@
 venv
-model
 asset
 __pycache__
 *.pyc

@@ -1,4 +1,5 @@
 
+import os
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -6,17 +7,45 @@ from torch.nn import functional as F
 # ==========================================
 # 1. CONFIGURATION & HYPERPARAMETERS
 # ==========================================
-batch_size = 16          # Number of independent sequences processed in parallel
-block_size = 256         # Maximum context length (window size)
-max_iters = 5000         # Total training iterations
-eval_interval = 500      # Intentional interval to estimate loss
-learning_rate = 3e-4     # Adam learning rate
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
-eval_iters = 200
-n_embd = 384             # Embedding dimension size
-n_head = 6               # Number of attention heads (384 / 6 = 64 dimension per head)
-n_layer = 16              # Number of transformer blocks stacked
-dropout = 0.2            # Dropout probability
+class HYPERPARAMITER:
+    repo_path = os.path.abspath(os.path.dirname(__file__))
+    model_dir = os.path.join(repo_path, "model")
+    model_path = os.path.join(model_dir, "transformer.pt")
+    vocab_path = os.path.join(model_dir, "vocab.json")
+    merges_path = os.path.join(model_dir, "merges.txt")
+    config_path = os.path.join(model_dir, "config.json")
+    data_dir = os.path.join(repo_path, "data1")
+    # data_path = os.path.join(data_dir, "input.txt")
+    batch_size = 16          # Number of independent sequences processed in parallel
+    block_size = 256         # Maximum context length (window size)
+    max_iters = 30000         # Total training iterations
+    eval_interval = 500      # Intentional interval to estimate loss
+    learning_rate = 3e-4     # Adam learning rate
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    eval_iters = 200
+    epochs = 10              # Number of training epochs
+    n_embd = 384             # Embedding dimension size
+    n_head = 6               # Number of attention heads (must divide n_embd evenly)
+    n_layer = 64             # Number of transformer blocks stacked
+    dropout = 0.2            # Dropout probability
+
+    assert n_embd % n_head == 0, "HYPERPARAMITER.n_embd must be divisible by HYPERPARAMITER.n_head"
+    head_size = n_embd // n_head
+    hidden_size = n_embd
+
+# Export legacy names for compatibility
+batch_size = HYPERPARAMITER.batch_size
+block_size = HYPERPARAMITER.block_size
+max_iters = HYPERPARAMITER.max_iters
+eval_interval = HYPERPARAMITER.eval_interval
+learning_rate = HYPERPARAMITER.learning_rate
+device = HYPERPARAMITER.device
+eval_iters = HYPERPARAMITER.eval_iters
+epochs = HYPERPARAMITER.epochs
+n_embd = HYPERPARAMITER.n_embd
+n_head = HYPERPARAMITER.n_head
+n_layer = HYPERPARAMITER.n_layer
+dropout = HYPERPARAMITER.dropout
 
 torch.manual_seed(1337)
 
@@ -31,8 +60,8 @@ class Head(nn.Module):
         self.query = nn.Linear(n_embd, head_size, bias=False)
         self.value = nn.Linear(n_embd, head_size, bias=False)
         # Register a lower-triangular causal mask buffer (not a trainable parameter)
-        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
-        self.dropout = nn.Dropout(dropout)
+        self.register_buffer('tril', torch.tril(torch.ones(HYPERPARAMITER.block_size, HYPERPARAMITER.block_size)))
+        self.dropout = nn.Dropout(HYPERPARAMITER.dropout)
 
     def forward(self, x):
         B, T, C = x.shape
@@ -56,8 +85,8 @@ class MultiHeadAttention(nn.Module):
     def __init__(self, num_heads, head_size):
         super().__init__()
         self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
-        self.proj = nn.Linear(n_embd, n_embd) # Projection layer back into residual pathway
-        self.dropout = nn.Dropout(dropout)
+        self.proj = nn.Linear(HYPERPARAMITER.n_embd, HYPERPARAMITER.n_embd) # Projection layer back into residual pathway
+        self.dropout = nn.Dropout(HYPERPARAMITER.dropout)
 
     def forward(self, x):
         # Concatenate outputs from all heads along the channel dimension
@@ -74,10 +103,10 @@ class FeedForward(nn.Module):
         super().__init__()
         # Standard Transformer architecture expands hidden dimension by a factor of 4
         self.net = nn.Sequential(
-            nn.Linear(n_embd, 4 * n_embd),
+            nn.Linear(HYPERPARAMITER.n_embd, 4 * HYPERPARAMITER.n_embd),
             nn.GELU(),
-            nn.Linear(4 * n_embd, n_embd),
-            nn.Dropout(dropout),
+            nn.Linear(4 * HYPERPARAMITER.n_embd, HYPERPARAMITER.n_embd),
+            nn.Dropout(HYPERPARAMITER.dropout),
         )
 
     def forward(self, x):
@@ -110,21 +139,21 @@ class MiniLanguageModel(nn.Module):
     def __init__(self, vocab_size):
         super().__init__()
         # Each token looks up its dense vector embedding
-        self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
+        self.token_embedding_table = nn.Embedding(vocab_size, HYPERPARAMITER.n_embd)
         # Each position looks up its structural location embedding
-        self.position_embedding_table = nn.Embedding(block_size, n_embd)
+        self.position_embedding_table = nn.Embedding(HYPERPARAMITER.block_size, HYPERPARAMITER.n_embd)
         # Stack sequential transformer layers
-        self.blocks = nn.Sequential(*[Block(n_embd, n_head=n_head) for _ in range(n_layer)])
+        self.blocks = nn.Sequential(*[Block(HYPERPARAMITER.n_embd, n_head=HYPERPARAMITER.n_head) for _ in range(HYPERPARAMITER.n_layer)])
         # Final layer normalization
-        self.ln_f = nn.LayerNorm(n_embd)
+        self.ln_f = nn.LayerNorm(HYPERPARAMITER.n_embd)
         # Language modeling head mapping hidden state back to vocabulary logits
-        self.lm_head = nn.Linear(n_embd, vocab_size)
+        self.lm_head = nn.Linear(HYPERPARAMITER.n_embd, vocab_size)
 
     def resize_token_embeddings(self, new_num_tokens):
         """ Resizes token embedding table and language model head to accommodate new tokens """
         # 1. Resize token embedding table
         old_embeddings = self.token_embedding_table
-        new_embeddings = nn.Embedding(new_num_tokens, n_embd, device=old_embeddings.weight.device)
+        new_embeddings = nn.Embedding(new_num_tokens, HYPERPARAMITER.n_embd, device=old_embeddings.weight.device)
         # Copy over old weights
         num_to_copy = min(old_embeddings.num_embeddings, new_num_tokens)
         new_embeddings.weight.data[:num_to_copy] = old_embeddings.weight.data[:num_to_copy]
@@ -132,7 +161,7 @@ class MiniLanguageModel(nn.Module):
 
         # 2. Resize language model head
         old_lm_head = self.lm_head
-        new_lm_head = nn.Linear(n_embd, new_num_tokens, device=old_lm_head.weight.device)
+        new_lm_head = nn.Linear(HYPERPARAMITER.n_embd, new_num_tokens, device=old_lm_head.weight.device)
         # Copy over old weights and biases
         new_lm_head.weight.data[:num_to_copy] = old_lm_head.weight.data[:num_to_copy]
         if old_lm_head.bias is not None:
@@ -144,7 +173,7 @@ class MiniLanguageModel(nn.Module):
 
         # Retrieve structural embeddings
         tok_emb = self.token_embedding_table(idx) # (B, T, n_embd)
-        pos_emb = self.position_embedding_table(torch.arange(T, device=device)) # (T, n_embd)
+        pos_emb = self.position_embedding_table(torch.arange(T, device=HYPERPARAMITER.device)) # (T, n_embd)
         x = tok_emb + pos_emb # Combine content and spatial location (B, T, n_embd)
 
         # Pass through the core network backbone
@@ -166,7 +195,7 @@ class MiniLanguageModel(nn.Module):
         """ Generate novel text auto-regressively given a starting context """
         for _ in range(max_new_tokens):
             # Crop current context if it exceeds the maximum architectural block size
-            idx_cond = idx[:, -block_size:]
+            idx_cond = idx[:, -HYPERPARAMITER.block_size:]
             # Get next-step predictions
             logits, loss = self(idx_cond)
             # Focus strictly on the final index step to make the next prediction
