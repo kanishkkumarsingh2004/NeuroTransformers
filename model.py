@@ -16,17 +16,17 @@ class HYPERPARAMITER:
     config_path = os.path.join(model_dir, "config.json")
     data_dir = os.path.join(repo_path, "data1")
     # data_path = os.path.join(data_dir, "input.txt")
-    batch_size = 16          # Number of independent sequences processed in parallel
+    batch_size = 32          # Number of independent sequences processed in parallel
     block_size = 256         # Maximum context length (window size)
-    max_iters = 30000         # Total training iterations
+    max_iters = 50000         # Total training iterations
     eval_interval = 500      # Intentional interval to estimate loss
     learning_rate = 3e-4     # Adam learning rate
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     eval_iters = 200
-    epochs = 10              # Number of training epochs
+    epochs = 1              # Number of training epochs
     n_embd = 384             # Embedding dimension size
     n_head = 6               # Number of attention heads (must divide n_embd evenly)
-    n_layer = 64             # Number of transformer blocks stacked
+    n_layer = 16             # Number of transformer blocks stacked
     dropout = 0.2            # Dropout probability
 
     assert n_embd % n_head == 0, "HYPERPARAMITER.n_embd must be divisible by HYPERPARAMITER.n_head"

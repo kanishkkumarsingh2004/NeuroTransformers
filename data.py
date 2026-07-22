@@ -175,7 +175,7 @@ class BPETokenizer:
 
 # Initialize and load or train tokenizer
 tokenizer = BPETokenizer()
-target_vocab_size = 512*3 + 256
+target_vocab_size = 512*3
 
 if os.path.exists(VOCAB_PATH) and os.path.exists(MERGES_PATH):
     try:
