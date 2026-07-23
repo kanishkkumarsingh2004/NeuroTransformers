@@ -53,7 +53,7 @@ def main():
     print(f"Epochs: {HYPERPARAMITER.epochs}")
     print(f"Steps per epoch: {steps_per_epoch}")
     print(f"Data folder: {HYPERPARAMITER.data_dir}")
-    data_files = sorted([f.name for f in os.listdir(HYPERPARAMITER.data_dir) if f.endswith('.txt')])
+    data_files = sorted([f for f in os.listdir(HYPERPARAMITER.data_dir) if f.endswith('.txt')])
     print(f"Data files: {', '.join(data_files) if data_files else 'none found'}")
     print(f"Model path: {HYPERPARAMITER.model_path}")
     print(f"Max training iterations: {HYPERPARAMITER.max_iters}")

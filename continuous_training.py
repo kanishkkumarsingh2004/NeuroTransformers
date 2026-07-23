@@ -1,5 +1,6 @@
 import os
 import torch
+from tqdm import tqdm
 from model import MiniLanguageModel, HYPERPARAMITER
 from data import get_batch, estimate_loss, vocab_size, train_data
 
@@ -75,9 +76,9 @@ if start_iter > 0:
     start_step = start_iter % steps_per_epoch
 
 global_step = start_iter
-for epoch in range(start_epoch, HYPERPARAMITER.epochs):
+for epoch in tqdm(range(start_epoch, HYPERPARAMITER.epochs), desc="Epochs", unit="epoch"):
     epoch_start = start_step if epoch == start_epoch else 0
-    for step in range(epoch_start, steps_per_epoch):
+    for step in tqdm(range(epoch_start, steps_per_epoch), desc=f"Epoch {epoch+1} Steps", leave=False, unit="step"):
         current_epoch = epoch + 1
         current_step = step + 1
 

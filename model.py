@@ -14,7 +14,7 @@ class HYPERPARAMITER:
     vocab_path = os.path.join(model_dir, "vocab.json")
     merges_path = os.path.join(model_dir, "merges.txt")
     config_path = os.path.join(model_dir, "config.json")
-    data_dir = os.path.join(repo_path, "data1")
+    data_dir = os.path.join(repo_path, "data")
     # data_path = os.path.join(data_dir, "input.txt")
     batch_size = 16          # Number of independent sequences processed in parallel
     block_size = 256         # Maximum context length (window size)
