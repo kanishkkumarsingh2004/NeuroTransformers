@@ -7,7 +7,7 @@ from datetime import datetime
 
 # Base Directory & Paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "data")
+DATA_DIR = os.path.join(BASE_DIR, "data4")
 os.makedirs(DATA_DIR, exist_ok=True)
 
 # Standard Special Tokens
