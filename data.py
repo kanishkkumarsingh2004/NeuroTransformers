@@ -15,26 +15,35 @@ VOCAB_PATH = HYPERPARAMITER.vocab_path
 CONFIG_PATH = HYPERPARAMITER.config_path
 
 # -----------------------------
-# Dataset Loading from Folder
+# Dataset Loading from Hyperparameter Data Directory
 # -----------------------------
-DATA_URL = "https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt"
-DATA_DIR = Path(HYPERPARAMITER.data_dir)
-DATA_DIR.mkdir(parents=True, exist_ok=True)
+target_data_dir = Path(HYPERPARAMITER.data_dir)
+if not target_data_dir.is_dir():
+    target_data_dir = Path(HYPERPARAMITER.repo_path) / "data"
 
-# Find all .txt files in the data folder and read them sequentially.
-DATA_FILES = sorted(DATA_DIR.glob("*.txt"))
+DATA_FILES = sorted(target_data_dir.glob("**/*.txt"))
+
 if not DATA_FILES:
-    fallback_path = DATA_DIR / "chat_dataset.txt"
-    print("No .txt files found in the data folder. Downloading fallback dataset to the data folder...")
+    fallback_dir = Path(HYPERPARAMITER.repo_path) / "data"
+    fallback_dir.mkdir(parents=True, exist_ok=True)
+    fallback_path = fallback_dir / "chat_dataset.txt"
+    print("No .txt files found in data folder. Downloading fallback dataset...")
     import urllib.request
-    urllib.request.urlretrieve(DATA_URL, fallback_path)
+    urllib.request.urlretrieve("https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt", fallback_path)
     DATA_FILES = [fallback_path]
 
-print(f"Loading training data from {len(DATA_FILES)} file(s) in {DATA_DIR}")
+print(f"Loading training data from {len(DATA_FILES)} file(s) in specific folder from HYPERPARAMITER: {target_data_dir.name} ({target_data_dir})")
 text_parts = []
 for data_file in DATA_FILES:
-    text_parts.append(data_file.read_text(encoding="utf-8"))
+    try:
+        content = data_file.read_text(encoding="utf-8").strip()
+        if content:
+            text_parts.append(content)
+    except Exception as e:
+        print(f"⚠️ Error reading {data_file.name}: {e}")
+
 text = "\n\n".join(text_parts)
+print(f"📊 Total Combined Dataset: {len(text):,} characters from {len(DATA_FILES)} .txt files in {target_data_dir.name}")
 
 # -----------------------------
 # Paths & BPE Tokenizer Definition
@@ -61,8 +70,10 @@ class BPETokenizer:
         if num_merges <= 0:
             return
             
-        # Limit training sample to first 20k characters for rapid Python BPE training
-        ids = list(text[:20000].encode('utf-8'))
+        # Sample representative characters across all dataset files for BPE training
+        sample_text = text[:300000] if len(text) > 300000 else text
+        print(f"🔤 Training BPE merges on {len(sample_text):,} characters across all data folders...")
+        ids = list(sample_text.encode('utf-8'))
         
         for i in range(num_merges):
             counts = {}

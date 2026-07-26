@@ -1,12 +1,14 @@
 import os
 import sys
 import random
+import argparse
+import time
+from datetime import datetime
 
 # Base Directory & Paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "data1")
+DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
-CHAT_DATASET_PATH = os.path.join(DATA_DIR, "chat_dataset.txt")
 
 # Standard Special Tokens
 BOS = "[BOS]"
@@ -642,7 +644,7 @@ SEED_CHAT_DATA = [
     },
 ]
 
-def generate_expanded_dataset(target_count=15000000):
+def generate_expanded_dataset(target_count=15000, seed=None):
     """ Expands seed dataset with procedural generation + real HF data """
     dataset = []
     
@@ -707,7 +709,112 @@ def generate_expanded_dataset(target_count=15000000):
         dataset.append({"system": sys_p, "user": user_p, "thought": thought_p, "assistant": ast_p})
     print(f"  💻 Generated 2500 programming examples")
 
-    # 5. Download REAL data from Hugging Face datasets
+    # 5. Generate Conversational, Casual Greetings & AI/ML QA Data
+    conversational_greetings = [
+        ("hi", "greeting", "Hi! How can I help you today?"),
+        ("hii", "greeting", "Hello there! What's on your mind today?"),
+        ("hello", "greeting", "Hello! How can I assist you right now?"),
+        ("helloo", "greeting", "Hey hello! Feel free to ask me any question."),
+        ("hey", "greeting", "Hey! Ready to help. What would you like to work on?"),
+        ("heyy", "greeting", "Hey there! How is your day going?"),
+        ("good morning", "greeting", "Good morning! Hope you have a productive day ahead. How can I help?"),
+        ("good evening", "greeting", "Good evening! What can I assist you with tonight?"),
+        ("whats up", "greeting", "Not much, just ready to assist you! What's on your mind?"),
+        ("sup", "greeting", "Hey! All good here. How can I help you today?"),
+        ("how are you?", "greeting", "I'm doing great, thank you! As an AI, I'm ready to help you with anything."),
+        ("who are you?", "identity", "I'm **NeuroBot**, an AI reasoning assistant designed to help with math, programming, science, and AI topics!"),
+        ("what is your name?", "identity", "My name is **NeuroBot**! I'm an AI assistant created to help answer questions step by step."),
+        ("what can you do?", "capabilities", "I can help solve math problems, write Python code, explain science & AI concepts, and chat about various topics!"),
+        ("are you an ai?", "ai_check", "Yes! I am an artificial intelligence model trained to assist you with reasoning and text generation."),
+        ("are you a robot?", "ai_check", "I'm a software-based AI model! I process text using neural networks to help answer your questions."),
+        ("thank you", "gratitude", "You're very welcome! Feel free to ask if you need help with anything else."),
+        ("thanks a lot", "gratitude", "Happy to help! Let me know whenever you have more questions."),
+        ("bye", "farewell", "Goodbye! Have a fantastic day ahead! 👋"),
+        ("goodnight", "farewell", "Goodnight! Sleep well and feel free to return whenever you need assistance.")
+    ]
+
+    ai_concepts = [
+        ("What is Artificial Intelligence (AI)?",
+         "Artificial Intelligence (AI) refers to computer systems designed to perform tasks that typically require human intelligence, such as reasoning, learning, perception, and problem-solving.",
+         "The user is asking for a clear definition of Artificial Intelligence.\nExplain core concept concisely."),
+        
+        ("What is Machine Learning?",
+         "Machine Learning (ML) is a branch of AI where algorithms learn underlying patterns from data to make predictions or decisions without being explicitly programmed.",
+         "Definition request for Machine Learning.\nHighlight data-driven pattern learning."),
+
+        ("What is Deep Learning?",
+         "Deep Learning is a specialized subfield of Machine Learning that utilizes multi-layered artificial neural networks (deep networks) to extract complex representations from large datasets.",
+         "Explanation of Deep Learning.\nContrast with general ML by emphasizing multi-layered neural networks."),
+
+        ("What is a Transformer model?",
+         "A Transformer is a neural network architecture introduced in 2017 ('Attention Is All You Need') that processes sequential data in parallel using self-attention mechanisms, forming the foundation of modern Large Language Models.",
+         "Technical query about Transformers.\nMention 2017 paper, self-attention, and parallel processing."),
+
+        ("What is Self-Attention in Transformers?",
+         "Self-attention allows a neural network to weigh the contextual importance of each word in a sequence relative to all other words, capturing long-range dependencies regardless of position.",
+         "Explain Self-Attention mechanism.\nFocus on contextual word weighting and long-range dependency capture."),
+
+        ("What is an LLM (Large Language Model)?",
+         "A Large Language Model (LLM) is a deep learning model trained on massive text corpora to understand, generate, and process human language at scale.",
+         "Define Large Language Model (LLM).\nExplain massive data training and text generation."),
+
+        ("What is PyTorch?",
+         "PyTorch is an open-source machine learning framework created by Meta AI. It is widely favored for deep learning research due to its dynamic computation graph and GPU acceleration.",
+         "Explain PyTorch framework.\nHighlight Meta AI, dynamic graphs, and GPU compute."),
+
+        ("What is a Neural Network?",
+         "An artificial neural network is a computational framework inspired by biological brains. It consists of layers of interconnected nodes (neurons) that process inputs through weighted connections.",
+         "Explain Neural Network architecture.\nDraw biological analogy and explain node layers."),
+
+        ("What is Gradient Descent?",
+         "Gradient descent is an optimization algorithm used to minimize the loss function of a model by iteratively updating weights in the direction opposite to the gradient.",
+         "Explain Gradient Descent optimization.\nDescribe loss minimization via weight updates."),
+
+        ("What is Overfitting in machine learning?",
+         "Overfitting occurs when a model memorizes training data noise rather than learning generalizable patterns, resulting in high accuracy on training data but poor performance on new test data.",
+         "Explain Overfitting problem.\nDiscuss training memorization vs general test performance."),
+
+        ("What is Tokenization?",
+         "Tokenization is the process of breaking continuous text into discrete chunks called tokens (words, subwords, or characters) suitable for neural network input embeddings.",
+         "Define Tokenization process in NLP.\nExplain converting raw text into subwords/tokens."),
+
+        ("What is Byte-Pair Encoding (BPE)?",
+         "Byte-Pair Encoding (BPE) is a subword tokenization algorithm that iteratively replaces the most frequent pairs of characters/bytes with a single new token, balancing vocabulary size and out-of-vocabulary handling.",
+         "Explain BPE Tokenization algorithm.\nHighlight subword pair merging and vocabulary efficiency."),
+
+        ("What is Fine-Tuning?",
+         "Fine-tuning is taking a model pre-trained on a broad dataset and training it further on a smaller, domain-specific dataset to adapt it for specialized tasks.",
+         "Define model Fine-Tuning.\nExplain taking pre-trained weights and updating on specialized data."),
+
+        ("What is Prompt Engineering?",
+         "Prompt engineering is the practice of designing and refining text prompts to guide generative AI models toward producing optimal, accurate, and structured outputs.",
+         "Explain Prompt Engineering.\nHighlight prompt design for generative AI output guidance."),
+
+        ("What is AGI (Artificial General Intelligence)?",
+         "AGI refers to hypothetical AI systems that possess human-level intelligence, adaptability, and reasoning across any cognitive domain, unlike narrow AI built for specific tasks.",
+         "Define AGI vs Narrow AI.\nHighlight human-level general adaptability across domains."),
+
+        ("Can AI feel emotions?",
+         "No, current AI systems do not have feelings, consciousness, or emotions. They process numbers and text through mathematical models without subjective experience.",
+         "Address AI consciousness/feelings.\nClarify that AI is mathematical pattern processing without subjective experience.")
+    ]
+
+    for i in range(300000):
+        if random.random() < 0.4:
+            u_text, category, a_resp = random.choice(conversational_greetings)
+            sys_p = random.choice(SYSTEM_PROMPTS)
+            thought_p = f"The user is engaging in casual conversation ('{u_text}').\nCategory: {category}.\nFormulate a warm, helpful, and natural response."
+            dataset.append({"system": sys_p, "user": u_text, "thought": thought_p, "assistant": a_resp})
+        else:
+            q_text, a_resp, thought_desc = random.choice(ai_concepts)
+            prefix = random.choice(["", "Can you explain: ", "Tell me about ", "Hey, ", "What do you know about: "])
+            user_p = f"{prefix}{q_text}" if prefix else q_text
+            sys_p = random.choice(SYSTEM_PROMPTS)
+            thought_p = f"Target query: {q_text}.\n{thought_desc}"
+            dataset.append({"system": sys_p, "user": user_p, "thought": thought_p, "assistant": a_resp})
+    print(f"  💬 Generated 30000 conversational, greetings & AI/ML QA examples")
+
+    # 6. Download REAL data from Hugging Face datasets
     hf_datasets_to_try = [
         # (dataset_name, split, text_field, max_samples, description)
         ("agentlans/high-quality-english-sentences", "train", "text", 3000, "High-quality English sentences"),
@@ -748,7 +855,8 @@ def generate_expanded_dataset(target_count=15000000):
             print(f"  ⚠️ Skipping '{ds_name}': {e}")
 
     # Shuffle dataset
-    random.seed(42)
+    if seed is not None:
+        random.seed(seed)
     random.shuffle(dataset)
     
     final = dataset[:target_count]
@@ -766,27 +874,59 @@ def format_sample(sample):
         f"{EOS}\n\n"
     )
 
-def main():
+def main(num_files=1):
+    parser = argparse.ArgumentParser(description="NeuroTransformers Chat Dataset Generator")
+    parser.add_argument(
+        "-n", "--num_files", "--num-files",
+        type=int,
+        default=num_files,
+        help="Number of data files to generate (default: 1)"
+    )
+    args, unknown = parser.parse_known_args()
+
+    n_files = args.num_files
+    for arg in unknown:
+        if arg.isdigit():
+            n_files = int(arg)
+            break
+
     print("=" * 60)
     print("🚀 NeuroTransformers Chat Dataset Generator")
+    print(f"📁 Target Directory: {DATA_DIR}")
+    print(f"📦 Number of files to generate: {n_files}")
     print("=" * 60)
-    
-    data_items = generate_expanded_dataset(target_count=15000)
-    
-    print(f"\n✍️ Writing {len(data_items)} structured chat instances to:\n   {CHAT_DATASET_PATH}")
-    with open(CHAT_DATASET_PATH, "w", encoding="utf-8") as f:
-        for item in data_items:
-            f.write(format_sample(item))
 
-    file_size_mb = os.path.getsize(CHAT_DATASET_PATH) / (1024 * 1024)
-    print(f"\n✅ Dataset created successfully!")
-    print(f"   📁 File: {CHAT_DATASET_PATH}")
-    print(f"   📏 Size: {file_size_mb:.2f} MB")
-    print(f"   📊 Samples: {len(data_items)}")
-    print(f"\nSample entry:")
-    print("-" * 50)
-    print(format_sample(data_items[0]))
-    print("-" * 50)
+    for i in range(1, n_files + 1):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        if n_files > 1:
+            filename = f"chat_dataset_{timestamp}_{i}.txt"
+        else:
+            filename = f"chat_dataset_{timestamp}.txt"
+
+        file_path = os.path.join(DATA_DIR, filename)
+
+        print(f"\n[{i}/{n_files}] Generating dataset for file: {filename}...")
+        data_items = generate_expanded_dataset(target_count=15000, seed=42 + i)
+
+        print(f"\n✍️ Writing {len(data_items)} structured chat instances to:\n   {file_path}")
+        with open(file_path, "w", encoding="utf-8") as f:
+            for item in data_items:
+                f.write(format_sample(item))
+
+        file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+        print(f"\n✅ Dataset file created successfully!")
+        print(f"   📁 File: {file_path}")
+        print(f"   📏 Size: {file_size_mb:.2f} MB")
+        print(f"   📊 Samples: {len(data_items)}")
+
+        if i == 1:
+            print(f"\nSample entry:")
+            print("-" * 50)
+            print(format_sample(data_items[0]))
+            print("-" * 50)
+
+        if i < n_files:
+            time.sleep(1)
 
 if __name__ == "__main__":
     main()

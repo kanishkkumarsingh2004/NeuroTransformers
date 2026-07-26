@@ -21,21 +21,42 @@ def count_parameters(model):
     return total, trainable
 
 
-def load_checkpoint(model):
-    if not os.path.exists(MODEL_PATH):
-        print(f"Warning: checkpoint not found at {MODEL_PATH}. Using uninitialized model weights.")
-        return False
+def load_checkpoint():
+    model_path = HYPERPARAMITER.model_path if os.path.exists(HYPERPARAMITER.model_path) else os.path.join(HYPERPARAMITER.model_dir, "transformer.pt")
+    if not os.path.exists(model_path):
+        print(f"Warning: checkpoint not found at {model_path}. Using default initialized model weights.")
+        model = MiniLanguageModel(vocab_size=vocab_size).to(HYPERPARAMITER.device)
+        return model, False
 
-    checkpoint = torch.load(MODEL_PATH, map_location=HYPERPARAMITER.device)
-    saved_vocab_size = checkpoint["model_state"]["token_embedding_table.weight"].shape[0]
+    checkpoint = torch.load(model_path, map_location=HYPERPARAMITER.device)
+    config = checkpoint.get("config", {}) if isinstance(checkpoint, dict) else {}
+    model_state = checkpoint["model_state"] if isinstance(checkpoint, dict) and "model_state" in checkpoint else checkpoint
+
+    n_embd = config.get("n_embd")
+    n_head = config.get("n_head")
+    n_layer = config.get("n_layer")
+
+    if n_embd is None and "token_embedding_table.weight" in model_state:
+        n_embd = model_state["token_embedding_table.weight"].shape[1]
+    if n_layer is None and any(k.startswith("blocks.") for k in model_state):
+        n_layer = max(int(k.split('.')[1]) for k in model_state if k.startswith("blocks.")) + 1
+
+    model = MiniLanguageModel(
+        vocab_size=vocab_size,
+        n_embd=n_embd,
+        n_head=n_head,
+        n_layer=n_layer
+    ).to(HYPERPARAMITER.device)
+
+    saved_vocab_size = model_state["token_embedding_table.weight"].shape[0]
     if saved_vocab_size != vocab_size:
         print(f"-> Saved vocab size ({saved_vocab_size}) differs from current ({vocab_size}). Resizing embeddings...")
         model.resize_token_embeddings(saved_vocab_size)
-        model.load_state_dict(checkpoint["model_state"])
+        model.load_state_dict(model_state)
         model.resize_token_embeddings(vocab_size)
     else:
-        model.load_state_dict(checkpoint["model_state"])
-    return True
+        model.load_state_dict(model_state)
+    return model, True
 
 
 def main():

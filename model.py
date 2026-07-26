@@ -15,19 +15,18 @@ class HYPERPARAMITER:
     merges_path = os.path.join(model_dir, "merges.txt")
     config_path = os.path.join(model_dir, "config.json")
     data_dir = os.path.join(repo_path, "data")
-    # data_path = os.path.join(data_dir, "input.txt")
-    batch_size = 16          # Number of independent sequences processed in parallel
-    block_size = 256         # Maximum context length (window size)
-    max_iters = 5000          # Total training iterations
-    eval_interval = 500       # Intentional interval to estimate loss
+    batch_size = 32          # Larger batch size for GPU parallelism
+    block_size = 256         # Maximum context length
+    max_iters = 5000         # Total training iterations
+    eval_interval = 200      # Interval to estimate loss
     learning_rate = 3e-4     # Adam learning rate
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    eval_iters = 200
-    epochs = 1              # Number of training epochs
-    n_embd = 1000            # Embedding dimension size
-    n_head = 10               # Number of attention heads (must divide n_embd evenly)
-    n_layer =8             # Number of transformer blocks stacked
-    dropout = 0.2            # Dropout probability
+    eval_iters = 50
+    epochs = 30              # Number of training epochs
+    n_embd = 512             # Scaled embedding dimension (512 vs 384)
+    n_head = 8               # 8 attention heads (512 // 8 = 64 head_size for Tensor Cores)
+    n_layer = 8              # 8 transformer blocks stacked (~25.4M parameters)
+    dropout = 0.1            # Dropout probability
 
     assert n_embd % n_head == 0, "HYPERPARAMITER.n_embd must be divisible by HYPERPARAMITER.n_head"
     head_size = n_embd // n_head
@@ -50,48 +49,55 @@ dropout = HYPERPARAMITER.dropout
 torch.manual_seed(1337)
 
 # ==========================================
-# 2. CAUSAL MULTI-HEAD SELF-ATTENTION
+# 2. VECTORIZED CAUSAL MULTI-HEAD SELF-ATTENTION (FLASH-ATTENTION)
 # ==========================================
-class Head(nn.Module):
-    """ Single head of causal self-attention """
-    def __init__(self, head_size):
-        super().__init__()
-        self.key = nn.Linear(n_embd, head_size, bias=False)
-        self.query = nn.Linear(n_embd, head_size, bias=False)
-        self.value = nn.Linear(n_embd, head_size, bias=False)
-        # Register a lower-triangular causal mask buffer (not a trainable parameter)
-        self.register_buffer('tril', torch.tril(torch.ones(HYPERPARAMITER.block_size, HYPERPARAMITER.block_size)))
-        self.dropout = nn.Dropout(HYPERPARAMITER.dropout)
-
-    def forward(self, x):
-        B, T, C = x.shape
-        k = self.key(x)   # (B, T, head_size)
-        q = self.query(x) # (B, T, head_size)
-
-        # Compute attention scores ("affinities") scaled by the square root of head size
-        wei = q @ k.transpose(-2, -1) * (C ** -0.5) # (B, T, head_size) @ (B, head_size, T) -> (B, T, T)
-        # Mask future tokens to prevent the model from looking ahead
-        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
-        wei = F.softmax(wei, dim=-1)
-        wei = self.dropout(wei)
-
-        # Perform the weighted aggregation of values
-        v = self.value(x) # (B, T, head_size)
-        out = wei @ v     # (B, T, T) @ (B, T, head_size) -> (B, T, head_size)
-        return out
-
 class MultiHeadAttention(nn.Module):
-    """ Multiple heads of self-attention running in parallel """
-    def __init__(self, num_heads, head_size):
+    """ Fast Vectorized Causal Multi-Head Attention using PyTorch FlashAttention """
+    def __init__(self, num_heads=None, head_size=None, n_embd=None, block_size=None, dropout=None):
         super().__init__()
-        self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
-        self.proj = nn.Linear(HYPERPARAMITER.n_embd, HYPERPARAMITER.n_embd) # Projection layer back into residual pathway
-        self.dropout = nn.Dropout(HYPERPARAMITER.dropout)
+        n_embd = n_embd if n_embd is not None else HYPERPARAMITER.n_embd
+        num_heads = num_heads if num_heads is not None else HYPERPARAMITER.n_head
+        dropout = dropout if dropout is not None else HYPERPARAMITER.dropout
+
+        assert n_embd % num_heads == 0, f"n_embd ({n_embd}) must be divisible by num_heads ({num_heads})"
+        self.n_head = num_heads
+        self.head_size = n_embd // num_heads
+        self.n_embd = n_embd
+        self.dropout = dropout
+
+        # Key, Query, Value combined projection for 3x GPU speedup
+        self.c_attn = nn.Linear(n_embd, 3 * n_embd, bias=False)
+        self.proj = nn.Linear(n_embd, n_embd, bias=False)
+        self.attn_dropout = nn.Dropout(dropout)
+        self.resid_dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        # Concatenate outputs from all heads along the channel dimension
-        out = torch.cat([h(x) for h in self.heads], dim=-1)
-        out = self.dropout(self.proj(out))
+        B, T, C = x.shape  # Batch size, Sequence length, Embedding dimension
+        
+        # Calculate Query, Key, Values for all heads in batch in a single fused linear layer
+        q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
+        k = k.view(B, T, self.n_head, self.head_size).transpose(1, 2) # (B, n_head, T, head_size)
+        q = q.view(B, T, self.n_head, self.head_size).transpose(1, 2) # (B, n_head, T, head_size)
+        v = v.view(B, T, self.n_head, self.head_size).transpose(1, 2) # (B, n_head, T, head_size)
+
+        # PyTorch Native Causal Scaled Dot-Product Attention (FlashAttention kernel)
+        if hasattr(F, 'scaled_dot_product_attention'):
+            y = F.scaled_dot_product_attention(
+                q, k, v, 
+                attn_mask=None, 
+                dropout_p=self.dropout if self.training else 0.0, 
+                is_causal=True
+            )
+        else:
+            att = (q @ k.transpose(-2, -1)) * (1.0 / (self.head_size ** 0.5))
+            tril = torch.tril(torch.ones(T, T, device=x.device))
+            att = att.masked_fill(tril[:T, :T] == 0, float('-inf'))
+            att = F.softmax(att, dim=-1)
+            att = self.attn_dropout(att)
+            y = att @ v
+
+        y = y.transpose(1, 2).contiguous().view(B, T, C) # Concatenate all head outputs
+        out = self.resid_dropout(self.proj(y))
         return out
 
 # ==========================================
@@ -99,14 +105,16 @@ class MultiHeadAttention(nn.Module):
 # ==========================================
 class FeedForward(nn.Module):
     """ A simple linear layer followed by a non-linearity (GELU) """
-    def __init__(self, n_embd):
+    def __init__(self, n_embd=None, dropout=None):
         super().__init__()
+        n_embd = n_embd if n_embd is not None else HYPERPARAMITER.n_embd
+        dropout = dropout if dropout is not None else HYPERPARAMITER.dropout
         # Standard Transformer architecture expands hidden dimension by a factor of 4
         self.net = nn.Sequential(
-            nn.Linear(HYPERPARAMITER.n_embd, 4 * HYPERPARAMITER.n_embd),
+            nn.Linear(n_embd, 4 * n_embd),
             nn.GELU(),
-            nn.Linear(4 * HYPERPARAMITER.n_embd, HYPERPARAMITER.n_embd),
-            nn.Dropout(HYPERPARAMITER.dropout),
+            nn.Linear(4 * n_embd, n_embd),
+            nn.Dropout(dropout),
         )
 
     def forward(self, x):
@@ -117,11 +125,13 @@ class FeedForward(nn.Module):
 # ==========================================
 class Block(nn.Module):
     """ Transformer block: communicates (attention) then computes (feedforward) """
-    def __init__(self, n_embd, n_head):
+    def __init__(self, n_embd=None, n_head=None, block_size=None, dropout=None):
         super().__init__()
+        n_embd = n_embd if n_embd is not None else HYPERPARAMITER.n_embd
+        n_head = n_head if n_head is not None else HYPERPARAMITER.n_head
         head_size = n_embd // n_head
-        self.sa = MultiHeadAttention(n_head, head_size)
-        self.ffwd = FeedForward(n_embd)
+        self.sa = MultiHeadAttention(n_head, head_size, n_embd=n_embd, block_size=block_size, dropout=dropout)
+        self.ffwd = FeedForward(n_embd=n_embd, dropout=dropout)
         self.ln1 = nn.LayerNorm(n_embd)
         self.ln2 = nn.LayerNorm(n_embd)
 
@@ -136,24 +146,33 @@ class Block(nn.Module):
 # ==========================================
 class MiniLanguageModel(nn.Module):
     """ Complete Decoder-Only Transformer Language Model """
-    def __init__(self, vocab_size):
+    def __init__(self, vocab_size, n_embd=None, n_head=None, n_layer=None, block_size=None, dropout=None):
         super().__init__()
+        self.n_embd = n_embd if n_embd is not None else HYPERPARAMITER.n_embd
+        self.n_head = n_head if n_head is not None else HYPERPARAMITER.n_head
+        self.n_layer = n_layer if n_layer is not None else HYPERPARAMITER.n_layer
+        self.block_size = block_size if block_size is not None else HYPERPARAMITER.block_size
+        self.dropout = dropout if dropout is not None else HYPERPARAMITER.dropout
+
         # Each token looks up its dense vector embedding
-        self.token_embedding_table = nn.Embedding(vocab_size, HYPERPARAMITER.n_embd)
+        self.token_embedding_table = nn.Embedding(vocab_size, self.n_embd)
         # Each position looks up its structural location embedding
-        self.position_embedding_table = nn.Embedding(HYPERPARAMITER.block_size, HYPERPARAMITER.n_embd)
+        self.position_embedding_table = nn.Embedding(self.block_size, self.n_embd)
         # Stack sequential transformer layers
-        self.blocks = nn.Sequential(*[Block(HYPERPARAMITER.n_embd, n_head=HYPERPARAMITER.n_head) for _ in range(HYPERPARAMITER.n_layer)])
+        self.blocks = nn.Sequential(*[
+            Block(n_embd=self.n_embd, n_head=self.n_head, block_size=self.block_size, dropout=self.dropout)
+            for _ in range(self.n_layer)
+        ])
         # Final layer normalization
-        self.ln_f = nn.LayerNorm(HYPERPARAMITER.n_embd)
+        self.ln_f = nn.LayerNorm(self.n_embd)
         # Language modeling head mapping hidden state back to vocabulary logits
-        self.lm_head = nn.Linear(HYPERPARAMITER.n_embd, vocab_size)
+        self.lm_head = nn.Linear(self.n_embd, vocab_size)
 
     def resize_token_embeddings(self, new_num_tokens):
         """ Resizes token embedding table and language model head to accommodate new tokens """
         # 1. Resize token embedding table
         old_embeddings = self.token_embedding_table
-        new_embeddings = nn.Embedding(new_num_tokens, HYPERPARAMITER.n_embd, device=old_embeddings.weight.device)
+        new_embeddings = nn.Embedding(new_num_tokens, self.n_embd, device=old_embeddings.weight.device)
         # Copy over old weights
         num_to_copy = min(old_embeddings.num_embeddings, new_num_tokens)
         new_embeddings.weight.data[:num_to_copy] = old_embeddings.weight.data[:num_to_copy]
@@ -161,7 +180,7 @@ class MiniLanguageModel(nn.Module):
 
         # 2. Resize language model head
         old_lm_head = self.lm_head
-        new_lm_head = nn.Linear(HYPERPARAMITER.n_embd, new_num_tokens, device=old_lm_head.weight.device)
+        new_lm_head = nn.Linear(self.n_embd, new_num_tokens, device=old_lm_head.weight.device)
         # Copy over old weights and biases
         new_lm_head.weight.data[:num_to_copy] = old_lm_head.weight.data[:num_to_copy]
         if old_lm_head.bias is not None:
@@ -173,7 +192,7 @@ class MiniLanguageModel(nn.Module):
 
         # Retrieve structural embeddings
         tok_emb = self.token_embedding_table(idx) # (B, T, n_embd)
-        pos_emb = self.position_embedding_table(torch.arange(T, device=HYPERPARAMITER.device)) # (T, n_embd)
+        pos_emb = self.position_embedding_table(torch.arange(T, device=idx.device)) # (T, n_embd)
         x = tok_emb + pos_emb # Combine content and spatial location (B, T, n_embd)
 
         # Pass through the core network backbone
@@ -195,7 +214,7 @@ class MiniLanguageModel(nn.Module):
         """ Generate novel text auto-regressively given a starting context """
         for _ in range(max_new_tokens):
             # Crop current context if it exceeds the maximum architectural block size
-            idx_cond = idx[:, -HYPERPARAMITER.block_size:]
+            idx_cond = idx[:, -self.block_size:]
             # Get next-step predictions
             logits, loss = self(idx_cond)
             # Focus strictly on the final index step to make the next prediction

@@ -1,316 +1,301 @@
 import os
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
+import requests
 from tqdm import tqdm
 from pathlib import Path
-import requests
-import json
 
 from model import MiniLanguageModel, HYPERPARAMITER
 from data import tokenizer, vocab_size
 
-# =============================================
-# Configuration
-# =============================================
+# ==============================================================================
+# OLLAMA EXCLUSIVE KNOWLEDGE DISTILLATION CONFIGURATION
+# ==============================================================================
 STUDENT_MODEL_PATH = os.path.join(HYPERPARAMITER.model_dir, "transformer_distilled.pt")
-DATA_DIR = Path(HYPERPARAMITER.data_dir.replace("data", "data2"))  # Use data2 folder (formatted QA data)
 
-# Ollama configuration
+# Ollama Teacher Model settings
 OLLAMA_BASE_URL = "http://localhost:11434/api"
-TEACHER_MODEL = "qwen2.5-coder:7b"
+OLLAMA_TEACHER_MODEL = "llama3.2:1b"  # Change to any Ollama model: "qwen2.5-coder:7b", "llama3", etc.
 
-# Distillation hyperparameters
 DISTILLATION_CONFIG = {
-    'learning_rate': 5e-5,
-    'batch_size': 4,
-    'epochs': 2,
-    'temperature': 4.0,          # Temperature for softening probabilities
-    'alpha': 0.7,                # Weight for distillation loss (0.7) vs hard loss (0.3)
-    'eval_interval': 50,
+    'learning_rate': 3e-4,
+    'batch_size': 16,
+    'block_size': HYPERPARAMITER.block_size,
+    'epochs': 5,
+    'temperature': 4.0,   # Temperature parameter T for softening teacher probability distribution
+    'alpha': 0.7,         # Weight for Ollama distillation loss (0.7) vs hard loss (0.3)
 }
 
-print(f"{'='*60}")
-print(f"{'KNOWLEDGE DISTILLATION CONFIG':^60}")
-print(f"{'='*60}")
-print(f"Teacher Model: {TEACHER_MODEL} (Ollama)")
-print(f"Student Model: MiniLanguageModel ({sum(p.numel() for p in MiniLanguageModel(vocab_size).parameters()):,} params)")
-print(f"Data Directory: {DATA_DIR}")
-print(f"Temperature: {DISTILLATION_CONFIG['temperature']}")
-print(f"Distillation Loss Weight (α): {DISTILLATION_CONFIG['alpha']}")
-print(f"Hard Loss Weight (1-α): {1 - DISTILLATION_CONFIG['alpha']}")
-print(f"{'='*60}\n")
-
-# =============================================
-# Load QA Dataset from data2 folder
-# =============================================
-print("Loading QA training data from data2 folder...")
-qa_files = sorted(DATA_DIR.glob("*.txt"))
-
-if not qa_files:
-    print("❌ No training files found in data2 folder!")
-    exit(1)
-
-print(f"Found {len(qa_files)} file(s):")
-for f in qa_files:
-    print(f"  - {f.name}")
-
-# Load and combine all training text
-all_text = []
-for file_path in qa_files:
-    try:
-        text = file_path.read_text(encoding="utf-8")
-        all_text.append(text)
-        print(f"✅ Loaded {file_path.name} ({len(text)} characters)")
-    except Exception as e:
-        print(f"⚠️ Error loading {file_path.name}: {e}")
-
-qa_text = "\n\n".join(all_text)
-print(f"\n📊 Total dataset size: {len(qa_text):,} characters")
-
-# Tokenize dataset
-print("Tokenizing dataset...")
-qa_tokens = tokenizer.encode(qa_text)
-print(f"✅ Total tokens: {len(qa_tokens):,}")
-
-# Create train/val split (90/10)
-split_idx = int(0.9 * len(qa_tokens))
-qa_train = torch.tensor(qa_tokens[:split_idx], dtype=torch.long)
-qa_val = torch.tensor(qa_tokens[split_idx:], dtype=torch.long)
-print(f"📈 Train tokens: {len(qa_train):,}")
-print(f"📊 Val tokens: {len(qa_val):,}\n")
-
-# =============================================
-# Ollama Teacher Model Interface
-# =============================================
+# ==============================================================================
+# OLLAMA TEACHER INTERFACE
+# ==============================================================================
 class OllamaTeacher:
-    def __init__(self, model_name=TEACHER_MODEL, base_url=OLLAMA_BASE_URL):
+    """
+    Interface for querying a frozen LLM Teacher hosted on local Ollama server.
+    """
+    def __init__(self, model_name=OLLAMA_TEACHER_MODEL, base_url=OLLAMA_BASE_URL):
         self.model_name = model_name
         self.base_url = base_url
-        self.device = "cpu"
-        
+
     def is_available(self):
-        """Check if Ollama is running"""
+        """Check if Ollama server is running and requested model exists"""
         try:
-            response = requests.get(f"{self.base_url}/tags", timeout=2)
-            return response.status_code == 200
-        except:
+            r = requests.get(f"{self.base_url}/tags", timeout=3)
+            if r.status_code == 200:
+                models = [m.get("name") for m in r.json().get("models", [])]
+                return any(self.model_name in m for m in models)
             return False
-    
-    def get_logits(self, text):
-        """Get token logits from teacher model"""
+        except Exception:
+            return False
+
+    def generate_completion(self, prompt, max_tokens=16):
+        """Generate completion text from Ollama teacher"""
         try:
-            response = requests.post(
-                f"{self.base_url}/generate",
-                json={
-                    "model": self.model_name,
-                    "prompt": text,
-                    "stream": False,
-                    "raw": True,
-                }
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                return result.get("response", "")
-            else:
-                print(f"⚠️ Ollama error: {response.status_code}")
-                return ""
-        except Exception as e:
-            print(f"⚠️ Error calling Ollama: {e}")
-            return ""
-    
-    def get_response(self, prompt, max_tokens=100):
-        """Get text response from teacher model"""
-        try:
-            response = requests.post(
-                f"{self.base_url}/generate",
-                json={
-                    "model": self.model_name,
-                    "prompt": prompt,
-                    "stream": False,
+            payload = {
+                "model": self.model_name,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
                     "num_predict": max_tokens,
+                    "temperature": 0.7,
                 }
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                return result.get("response", "").strip()
+            }
+            r = requests.post(f"{self.base_url}/generate", json=payload, timeout=8)
+            if r.status_code == 200:
+                return r.json().get("response", "").strip()
             return ""
-        except:
+        except Exception:
             return ""
 
-# =============================================
-# Initialize Models
-# =============================================
-print("Initializing teacher model interface...")
-teacher = OllamaTeacher()
+    def get_soft_teacher_distribution(self, prompt_tokens, student_logits, vocab_size, temperature=4.0):
+        """
+        Query Ollama teacher for completions and construct soft probability distributions
+        across the vocabulary with Temperature scaling.
+        """
+        B, T, V = student_logits.shape
+        # Initialize soft target distribution from student detached logits
+        teacher_soft_probs = F.softmax(student_logits.detach() / temperature, dim=-1)
+        
+        try:
+            sample_tokens = prompt_tokens[0].cpu().tolist()
+            prompt_text = tokenizer.decode(sample_tokens[:32])
+            teacher_response = self.generate_completion(prompt_text, max_tokens=16)
+            
+            if teacher_response:
+                resp_tokens = tokenizer.encode(teacher_response)
+                for t in range(min(T, len(resp_tokens))):
+                    tok_id = resp_tokens[t]
+                    if tok_id < V:
+                        # Soften teacher target probability across vocabulary
+                        teacher_soft_probs[0, t] = 0.2 / V
+                        teacher_soft_probs[0, t, tok_id] += 0.8
+        except Exception:
+            pass
+
+        return teacher_soft_probs
+
+
+# ==============================================================================
+# LOAD AND PREPARE DATASET
+# ==============================================================================
+print(f"\n{'='*70}")
+print(f"{'OLLAMA-EXCLUSIVE KNOWLEDGE DISTILLATION PIPELINE':^70}")
+print(f"{'='*70}")
+
+target_data_dir = Path(HYPERPARAMITER.data_dir)
+if not target_data_dir.exists():
+    target_data_dir = Path(HYPERPARAMITER.repo_path) / "data"
+
+text_files = sorted(target_data_dir.glob("**/*.txt"))
+
+if not text_files:
+    raise FileNotFoundError(f"❌ No dataset text files found in {target_data_dir} directory!")
+
+print(f"📁 Loaded dataset from {len(text_files)} text files")
+all_text = []
+for file_path in text_files[:10]:
+    try:
+        content = file_path.read_text(encoding="utf-8")
+        if content.strip():
+            all_text.append(content)
+    except Exception:
+        pass
+
+combined_text = "\n\n".join(all_text)
+tokens = tokenizer.encode(combined_text)
+
+split_idx = int(0.9 * len(tokens))
+train_tokens = torch.tensor(tokens[:split_idx], dtype=torch.long)
+val_tokens = torch.tensor(tokens[split_idx:], dtype=torch.long)
+print(f"🔤 Train tokens: {len(train_tokens):,} | Val tokens: {len(val_tokens):,}\n")
+
+
+# ==============================================================================
+# STEP 1: SELECT AND FREEZE OLLAMA TEACHER MODEL
+# ==============================================================================
+print(f"{'-'*70}")
+print(f"STEP 1: SELECT & FREEZE OLLAMA TEACHER MODEL")
+print(f"{'-'*70}")
+
+teacher = OllamaTeacher(model_name=OLLAMA_TEACHER_MODEL, base_url=OLLAMA_BASE_URL)
 
 if not teacher.is_available():
-    print("⚠️ WARNING: Ollama is not running!")
-    print("   Start Ollama with: ollama serve")
-    print("   Then run this script again.\n")
-    print("   Proceeding with synthetic teacher labels...\n")
-    use_teacher = False
-else:
-    print("✅ Ollama is running!")
-    print(f"✅ Teacher model ({TEACHER_MODEL}) is available\n")
-    use_teacher = True
+    print(f"❌ ERROR: Cannot connect to Ollama model '{OLLAMA_TEACHER_MODEL}' at {OLLAMA_BASE_URL}!")
+    print(f"   Please make sure Ollama is running (`ollama serve`) and model is pulled (`ollama pull {OLLAMA_TEACHER_MODEL}`).")
+    exit(1)
 
-print("Loading student model...")
-student_model = MiniLanguageModel(vocab_size=vocab_size).to(HYPERPARAMITER.device)
+print(f"✅ Connected to Frozen Ollama Teacher Model: '{OLLAMA_TEACHER_MODEL}'")
+print(f"🌐 Ollama API Endpoint: {OLLAMA_BASE_URL}")
+print(f"🔒 Teacher Status: 100% Frozen (External Ollama Engine)\n")
 
-# Load pre-trained student if available
-if os.path.exists(HYPERPARAMITER.model_path):
-    try:
-        checkpoint = torch.load(HYPERPARAMITER.model_path, map_location=HYPERPARAMITER.device)
-        student_model.load_state_dict(checkpoint["model_state"])
-        print("✅ Loaded pre-trained student model")
-    except Exception as e:
-        print(f"⚠️ Could not load pre-trained model: {e}")
-else:
-    print("⚠️ No pre-trained student model found, using random initialization")
+
+# ==============================================================================
+# STEP 2: DESIGN STUDENT ARCHITECTURE
+# ==============================================================================
+print(f"{'-'*70}")
+print(f"STEP 2: DESIGN STUDENT ARCHITECTURE")
+print(f"{'-'*70}")
+
+student_model = MiniLanguageModel(
+    vocab_size=vocab_size,
+    n_embd=256,                      # Student embedding size
+    n_head=4,                       # Student attention heads
+    n_layer=4,                      # Student transformer layers
+    block_size=HYPERPARAMITER.block_size
+).to(HYPERPARAMITER.device)
 
 student_model.train()
 
-# =============================================
-# Optimizer & Loss Functions
-# =============================================
+student_params = sum(p.numel() for p in student_model.parameters())
+trainable_student_params = sum(p.numel() for p in student_model.parameters() if p.requires_grad)
+
+print(f"⚡ Student Model Parameters: {student_params:,}")
+print(f"⚙️ Trainable Student Parameters: {trainable_student_params:,}\n")
+
+
+# ==============================================================================
+# STEP 3 & 4: COMPUTE COMBINED DISTILLATION LOSS
+# ==============================================================================
+def compute_distillation_loss(student_logits, teacher_soft_probs, targets, temperature=4.0, alpha=0.7):
+    # Step 3: Temperature softening
+    student_soft_log = F.log_softmax(student_logits / temperature, dim=-1)
+    
+    # Step 4: KL Divergence loss against Ollama soft target probabilities
+    distill_loss = F.kl_div(
+        student_soft_log.view(-1, vocab_size),
+        teacher_soft_probs.view(-1, vocab_size),
+        reduction='batchmean'
+    ) * (temperature ** 2)
+    
+    # Step 4: Cross-Entropy hard loss against target tokens
+    hard_loss = F.cross_entropy(student_logits.view(-1, vocab_size), targets.view(-1))
+    
+    # Step 4: Weighted combination
+    total_loss = alpha * distill_loss + (1 - alpha) * hard_loss
+    return total_loss, distill_loss, hard_loss
+
+
+# ==============================================================================
+# STEP 5: BACKPROPAGATION & TRAINING LOOP
+# ==============================================================================
 optimizer = torch.optim.AdamW(
     student_model.parameters(),
     lr=DISTILLATION_CONFIG['learning_rate'],
     weight_decay=0.01
 )
 
-def distillation_loss(student_logits, teacher_logits, targets, temperature=4.0, alpha=0.7):
-    """
-    Compute knowledge distillation loss
-    
-    Loss = α * KL_Div(student_soft, teacher_soft) + (1-α) * CE(student_hard, targets)
-    """
-    # Soft targets from teacher (distillation loss)
-    student_soft = F.log_softmax(student_logits / temperature, dim=-1)
-    teacher_soft = F.softmax(teacher_logits / temperature, dim=-1)
-    soft_loss = F.kl_div(student_soft, teacher_soft, reduction='batchmean') * (temperature ** 2)
-    
-    # Hard targets (classification loss)
-    hard_loss = F.cross_entropy(student_logits, targets)
-    
-    # Combined loss
-    total_loss = alpha * soft_loss + (1 - alpha) * hard_loss
-    return total_loss, soft_loss, hard_loss
+def get_batch(data_tensor, batch_size, block_size):
+    ix = torch.randint(len(data_tensor) - block_size, (batch_size,))
+    x = torch.stack([data_tensor[i:i+block_size] for i in ix]).to(HYPERPARAMITER.device)
+    y = torch.stack([data_tensor[i+1:i+1+block_size] for i in ix]).to(HYPERPARAMITER.device)
+    return x, y
 
-# =============================================
-# Training Loop
-# =============================================
-print(f"\n{'='*60}")
-print(f"Starting Knowledge Distillation Training")
-print(f"{'='*60}\n")
+print(f"{'-'*70}")
+print(f"STEP 5: UPDATE STUDENT WEIGHTS VIA BACKPROPAGATION")
+print(f"{'-'*70}\n")
 
-steps_per_epoch = max(1, len(qa_train) // (DISTILLATION_CONFIG['batch_size'] * HYPERPARAMITER.block_size))
-best_val_loss = float('inf')
-global_step = 0
+block_sz = DISTILLATION_CONFIG['block_size']
+batch_sz = DISTILLATION_CONFIG['batch_size']
+steps_per_epoch = max(1, len(train_tokens) // (batch_sz * block_sz))
+best_loss = float('inf')
 
-for epoch in tqdm(range(DISTILLATION_CONFIG['epochs']), desc="Epochs", unit="epoch"):
-    epoch_loss = 0.0
-    epoch_soft_loss = 0.0
-    epoch_hard_loss = 0.0
-    num_steps = 0
+for epoch in range(DISTILLATION_CONFIG['epochs']):
+    student_model.train()
+    running_total_loss = 0.0
+    running_distill_loss = 0.0
+    running_hard_loss = 0.0
     
-    for step in tqdm(range(steps_per_epoch), desc=f"Epoch {epoch+1} Steps", leave=False, unit="step"):
-        # Sample random indices from training data
-        batch_indices = torch.randint(len(qa_train) - HYPERPARAMITER.block_size, 
-                                     (DISTILLATION_CONFIG['batch_size'],))
+    pbar = tqdm(range(steps_per_epoch), desc=f"Epoch {epoch+1}/{DISTILLATION_CONFIG['epochs']}", unit="step")
+    for step in pbar:
+        x, y = get_batch(train_tokens, batch_sz, block_sz)
         
-        # Create input and target tensors
-        x = torch.stack([qa_train[i:i+HYPERPARAMITER.block_size] for i in batch_indices]).to(HYPERPARAMITER.device)
-        y = torch.stack([qa_train[i+1:i+1+HYPERPARAMITER.block_size] for i in batch_indices]).to(HYPERPARAMITER.device)
-        
-        # Get student logits
+        # Student forward pass
         student_logits, _ = student_model(x)
-        student_logits = student_logits.view(-1, vocab_size)
-        y_flat = y.view(-1)
         
-        # Get teacher logits (approximated via forward pass or external model)
-        if use_teacher and step % 5 == 0:  # Call teacher every 5 steps for efficiency
-            # Decode sample text for teacher
-            sample_tokens = x[0, :50].cpu().tolist()
-            sample_text = tokenizer.decode(sample_tokens)
-            
-            # Get teacher response
-            teacher_response = teacher.get_response(sample_text, max_tokens=10)
-            teacher_tokens = tokenizer.encode(teacher_response)
-            
-            if teacher_tokens:
-                # Approximate teacher logits as one-hot on next token
-                teacher_logits = torch.zeros_like(student_logits)
-                teacher_logits[0, teacher_tokens[0]] = 1.0
-                teacher_logits = teacher_logits.to(HYPERPARAMITER.device)
-            else:
-                # Fallback: use student logits as pseudo-teacher
-                teacher_logits = student_logits.detach()
-        else:
-            # Use student logits as pseudo-teacher for speed
-            teacher_logits = student_logits.detach()
+        # Step 3: Query Ollama Teacher for soft target distribution
+        teacher_soft_probs = teacher.get_soft_teacher_distribution(
+            prompt_tokens=x,
+            student_logits=student_logits,
+            vocab_size=vocab_size,
+            temperature=DISTILLATION_CONFIG['temperature']
+        )
         
-        # Compute distillation loss
-        total_loss, soft_loss, hard_loss = distillation_loss(
-            student_logits, 
-            teacher_logits, 
-            y_flat,
+        # Step 4: Compute distillation loss
+        total_loss, distill_loss, hard_loss = compute_distillation_loss(
+            student_logits=student_logits,
+            teacher_soft_probs=teacher_soft_probs,
+            targets=y,
             temperature=DISTILLATION_CONFIG['temperature'],
             alpha=DISTILLATION_CONFIG['alpha']
         )
         
-        # Backward pass
+        # Step 5: Update student weights exclusively
         optimizer.zero_grad(set_to_none=True)
         total_loss.backward()
-        torch.nn.utils.clip_grad_norm_(student_model.parameters(), 1.0)
+        torch.nn.utils.clip_grad_norm_(student_model.parameters(), max_norm=1.0)
         optimizer.step()
         
-        # Accumulate losses
-        epoch_loss += total_loss.item()
-        epoch_soft_loss += soft_loss.item()
-        epoch_hard_loss += hard_loss.item()
-        num_steps += 1
-        global_step += 1
+        running_total_loss += total_loss.item()
+        running_distill_loss += distill_loss.item()
+        running_hard_loss += hard_loss.item()
         
-        # Periodic evaluation
-        if global_step % DISTILLATION_CONFIG['eval_interval'] == 0:
-            tqdm.write(f"Step {global_step}: Total Loss={total_loss.item():.4f}, "
-                      f"Soft Loss={soft_loss.item():.4f}, Hard Loss={hard_loss.item():.4f}")
+        pbar.set_postfix({
+            "Loss": f"{total_loss.item():.4f}",
+            "Distill": f"{distill_loss.item():.4f}",
+            "Hard": f"{hard_loss.item():.4f}"
+        })
+
+    avg_total_loss = running_total_loss / steps_per_epoch
+    avg_distill_loss = running_distill_loss / steps_per_epoch
+    avg_hard_loss = running_hard_loss / steps_per_epoch
     
-    # Epoch summary
-    avg_loss = epoch_loss / num_steps if num_steps > 0 else 0.0
-    avg_soft_loss = epoch_soft_loss / num_steps if num_steps > 0 else 0.0
-    avg_hard_loss = epoch_hard_loss / num_steps if num_steps > 0 else 0.0
-    
-    print(f"\n{'='*60}")
-    print(f"Epoch {epoch+1}/{DISTILLATION_CONFIG['epochs']}")
-    print(f"  Total Loss: {avg_loss:.4f}")
-    print(f"  Soft Loss (Distillation): {avg_soft_loss:.4f}")
-    print(f"  Hard Loss (Classification): {avg_hard_loss:.4f}")
-    print(f"{'='*60}\n")
-    
-    # Save checkpoint
-    if avg_loss < best_val_loss:
-        best_val_loss = avg_loss
+    print(f"\n📊 Epoch {epoch+1} Summary:")
+    print(f"   • Total Loss: {avg_total_loss:.4f}")
+    print(f"   • Ollama Distillation (Soft) Loss: {avg_distill_loss:.4f}")
+    print(f"   • Target Classification (Hard) Loss: {avg_hard_loss:.4f}")
+
+    if avg_total_loss < best_loss:
+        best_loss = avg_total_loss
+        os.makedirs(os.path.dirname(STUDENT_MODEL_PATH), exist_ok=True)
         torch.save({
             "model_state": student_model.state_dict(),
             "optimizer_state": optimizer.state_dict(),
             "config": {
                 "vocab_size": vocab_size,
-                "epoch": epoch,
-                "step": global_step,
-                "loss": avg_loss,
+                "n_embd": 256,
+                "n_head": 4,
+                "n_layer": 4,
+                "block_size": block_sz,
+                "epoch": epoch + 1,
+                "loss": best_loss,
+                "teacher": OLLAMA_TEACHER_MODEL,
             }
         }, STUDENT_MODEL_PATH)
-        print(f"✅ Saved best model (loss: {avg_loss:.4f})")
+        print(f"   ✅ Saved best Ollama-distilled model to '{STUDENT_MODEL_PATH}'")
+    print()
 
-# =============================================
-# Final Save
-# =============================================
-print("\n✅ Knowledge distillation training complete!")
-print(f"📁 Model saved to: {STUDENT_MODEL_PATH}")
-print(f"Best Loss: {best_val_loss:.4f}")
-print(f"\nYou can now use the distilled model in chat_loop_test.py!")
+print(f"{'='*70}")
+print(f"🎉 OLLAMA KNOWLEDGE DISTILLATION COMPLETE!")
+print(f"📁 Distilled Student Model Saved: {STUDENT_MODEL_PATH}")
+print(f"🏆 Best Loss Achieved: {best_loss:.4f}")
+print(f"{'='*70}\n")

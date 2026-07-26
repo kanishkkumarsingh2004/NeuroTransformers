@@ -3,3 +3,5 @@ asset
 __pycache__
 *.pyc
 model/transformer.pt
+data3
+data4
