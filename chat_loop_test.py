@@ -143,17 +143,31 @@ def stream_generate(model, context_ids, temperature=0.7, top_k=40):
     return out_ids, generated_text
 
 
-def format_conversation(user_input):
-    """Format user input into proper conversation format"""
-    system_prompt = f"{BOS_TOKEN}{SYSTEM_TOKEN} You are a helpful AI assistant. Provide clear, concise, and accurate answers."
-    conversation = f"{system_prompt}\n{USER_TOKEN} {user_input}\n{ASSISTANT_TOKEN} "
+DEFAULT_SYSTEM_PROMPT = "You are luna, an advanced AI reasoning assistant created by DeepMind engineers. Think step by step before answering."
+
+def format_conversation(user_input, system_prompt=DEFAULT_SYSTEM_PROMPT, history=None):
+    """Format user input and system prompt into proper conversation format"""
+    conversation = f"{BOS_TOKEN}{SYSTEM_TOKEN} {system_prompt}\n"
+    if history:
+        for turn_user, turn_assistant in history:
+            conversation += f"{USER_TOKEN} {turn_user}\n{ASSISTANT_TOKEN} {turn_assistant}{EOS_TOKEN}\n"
+    conversation += f"{USER_TOKEN} {user_input}\n{ASSISTANT_TOKEN} "
     return conversation
 
 
 def run_chat_loop():
     model = load_model()
+    system_prompt = DEFAULT_SYSTEM_PROMPT
+    history = []
+
     print("\n" + "="*60)
-    print("Chat Loop Ready - Type 'quit' or 'exit' to stop")
+    print("🤖 Chat Loop Ready")
+    print(f"📌 System Prompt: {Colors.BOLD}{system_prompt}{Colors.NORMAL}")
+    print("💡 Commands:")
+    print("   /system <prompt>  - Change system prompt")
+    print("   /system          - View current system prompt")
+    print("   /reset           - Clear conversation history")
+    print("   exit or quit     - Stop the chat")
     print("="*60 + "\n")
 
     while True:
@@ -170,8 +184,22 @@ def run_chat_loop():
             print("Goodbye!")
             break
 
-        # Format input
-        formatted_input = format_conversation(user_input)
+        if user_input.startswith("/system"):
+            parts = user_input.split(" ", 1)
+            if len(parts) > 1 and parts[1].strip():
+                system_prompt = parts[1].strip()
+                print(f"✅ Updated System Prompt to: {Colors.BOLD}{system_prompt}{Colors.NORMAL}\n")
+            else:
+                print(f"📌 Current System Prompt: {Colors.BOLD}{system_prompt}{Colors.NORMAL}\n")
+            continue
+
+        if user_input.lower() in ["/reset", "/clear"]:
+            history.clear()
+            print("🔄 Conversation history cleared!\n")
+            continue
+
+        # Format input with system prompt and history
+        formatted_input = format_conversation(user_input, system_prompt=system_prompt, history=history)
         
         # Tokenize
         try:
@@ -179,6 +207,10 @@ def run_chat_loop():
             if len(input_ids) == 0:
                 print("ERROR: Could not tokenize input")
                 continue
+            
+            # Truncate context if it exceeds model's maximum block_size
+            if len(input_ids) > HYPERPARAMITER.block_size:
+                input_ids = input_ids[-HYPERPARAMITER.block_size:]
         except Exception as e:
             print(f"ERROR: Tokenization failed: {e}")
             continue
@@ -190,7 +222,11 @@ def run_chat_loop():
         print(f"{Colors.GREEN}BOT: {Colors.NORMAL}", end="", flush=True)
         try:
             with torch.no_grad():
-                stream_generate(model, input_tensor, temperature=0.7, top_k=40)
+                _, generated_text = stream_generate(model, input_tensor, temperature=0.7, top_k=40)
+                # Keep history up to last 10 turns
+                history.append((user_input, generated_text.strip()))
+                if len(history) > 10:
+                    history.pop(0)
         except Exception as e:
             print(f"ERROR during generation: {e}")
             continue
@@ -200,3 +236,4 @@ def run_chat_loop():
 
 if __name__ == "__main__":
     run_chat_loop()
+

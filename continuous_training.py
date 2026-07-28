@@ -6,19 +6,32 @@ from data import get_batch, estimate_loss, vocab_size, train_data
 
 MODEL_PATH = HYPERPARAMITER.model_path
 
-# Print device status
+# Print device status & enable CUDA speedups
 print(f"🚀 Starting simple & efficient training on {HYPERPARAMITER.device.upper()}")
 if HYPERPARAMITER.device == 'cuda' and torch.cuda.is_available():
     print(f"🎮 GPU: {torch.cuda.get_device_name(0)}")
     torch.cuda.empty_cache()
+    torch.backends.cudnn.benchmark = True
+    if hasattr(torch, 'set_float32_matmul_precision'):
+        torch.set_float32_matmul_precision('high')
 
 # Instantiate Model
 model = MiniLanguageModel(vocab_size=vocab_size).to(HYPERPARAMITER.device)
 print(f"📊 Model Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-# Optimizer & AMP Scaler
-optimizer = torch.optim.AdamW(model.parameters(), lr=HYPERPARAMITER.learning_rate, weight_decay=0.01)
-scaler = torch.amp.GradScaler("cuda") if HYPERPARAMITER.device == 'cuda' else None
+# Select optimal precision: bfloat16 for RTX 40-series Tensor Cores (fast & no NaN overflow)
+use_cuda = HYPERPARAMITER.device == 'cuda' and torch.cuda.is_available()
+use_bf16 = use_cuda and torch.cuda.is_bf16_supported()
+amp_dtype = torch.bfloat16 if use_bf16 else torch.float16
+
+# Fused AdamW optimizer for CUDA kernel fusion speedup
+use_fused = use_cuda
+try:
+    optimizer = torch.optim.AdamW(model.parameters(), lr=HYPERPARAMITER.learning_rate, weight_decay=0.01, fused=use_fused)
+except Exception:
+    optimizer = torch.optim.AdamW(model.parameters(), lr=HYPERPARAMITER.learning_rate, weight_decay=0.01)
+
+scaler = torch.amp.GradScaler("cuda") if (use_cuda and amp_dtype == torch.float16) else None
 
 # Load checkpoint if matching
 if os.path.exists(MODEL_PATH):
@@ -34,7 +47,7 @@ if os.path.exists(MODEL_PATH):
 steps_per_epoch = min(500, max(10, len(train_data) // (HYPERPARAMITER.batch_size * HYPERPARAMITER.block_size)))
 epochs = HYPERPARAMITER.epochs
 
-print(f"\n⚙️ Training Config: {epochs} Epochs × {steps_per_epoch} Steps | Batch Size: {HYPERPARAMITER.batch_size} | Block Size: {HYPERPARAMITER.block_size}\n")
+print(f"\n⚙️ Training Config: {epochs} Epochs × {steps_per_epoch} Steps | Batch Size: {HYPERPARAMITER.batch_size} | Block Size: {HYPERPARAMITER.block_size} | Precision: {'bfloat16' if use_bf16 else ('float16' if use_cuda else 'fp32')}\n")
 
 best_val_loss = float('inf')
 
@@ -48,17 +61,20 @@ for epoch in range(epochs):
         xb, yb = get_batch('train')
         
         # Mixed precision forward pass
-        with torch.amp.autocast(device_type="cuda", enabled=(scaler is not None)):
+        with torch.amp.autocast(device_type="cuda", enabled=use_cuda, dtype=amp_dtype):
             logits, loss = model(xb, yb)
         
         optimizer.zero_grad(set_to_none=True)
         
         if scaler is not None:
             scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             scaler.step(optimizer)
             scaler.update()
         else:
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             
         running_loss += loss.item()

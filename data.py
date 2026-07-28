@@ -15,35 +15,44 @@ VOCAB_PATH = HYPERPARAMITER.vocab_path
 CONFIG_PATH = HYPERPARAMITER.config_path
 
 # -----------------------------
-# Dataset Loading from Hyperparameter Data Directory
+# Lazy Dataset Loading from Hyperparameter Data Directory
 # -----------------------------
-target_data_dir = Path(HYPERPARAMITER.data_dir)
-if not target_data_dir.is_dir():
-    target_data_dir = Path(HYPERPARAMITER.repo_path) / "data"
+_text = None
+_train_data = None
+_val_data = None
 
-DATA_FILES = sorted(target_data_dir.glob("**/*.txt"))
+def load_text():
+    global _text
+    if _text is not None:
+        return _text
+    target_data_dir = Path(HYPERPARAMITER.data_dir)
+    if not target_data_dir.is_dir():
+        target_data_dir = Path(HYPERPARAMITER.repo_path) / "data"
 
-if not DATA_FILES:
-    fallback_dir = Path(HYPERPARAMITER.repo_path) / "data"
-    fallback_dir.mkdir(parents=True, exist_ok=True)
-    fallback_path = fallback_dir / "chat_dataset.txt"
-    print("No .txt files found in data folder. Downloading fallback dataset...")
-    import urllib.request
-    urllib.request.urlretrieve("https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt", fallback_path)
-    DATA_FILES = [fallback_path]
+    DATA_FILES = sorted(target_data_dir.glob("**/*.txt"))
 
-print(f"Loading training data from {len(DATA_FILES)} file(s) in specific folder from HYPERPARAMITER: {target_data_dir.name} ({target_data_dir})")
-text_parts = []
-for data_file in DATA_FILES:
-    try:
-        content = data_file.read_text(encoding="utf-8").strip()
-        if content:
-            text_parts.append(content)
-    except Exception as e:
-        print(f"⚠️ Error reading {data_file.name}: {e}")
+    if not DATA_FILES:
+        fallback_dir = Path(HYPERPARAMITER.repo_path) / "data"
+        fallback_dir.mkdir(parents=True, exist_ok=True)
+        fallback_path = fallback_dir / "chat_dataset.txt"
+        print("No .txt files found in data folder. Downloading fallback dataset...")
+        import urllib.request
+        urllib.request.urlretrieve("https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt", fallback_path)
+        DATA_FILES = [fallback_path]
 
-text = "\n\n".join(text_parts)
-print(f"📊 Total Combined Dataset: {len(text):,} characters from {len(DATA_FILES)} .txt files in {target_data_dir.name}")
+    print(f"Loading training data from {len(DATA_FILES)} file(s) in specific folder from HYPERPARAMITER: {target_data_dir.name} ({target_data_dir})")
+    text_parts = []
+    for data_file in DATA_FILES:
+        try:
+            content = data_file.read_text(encoding="utf-8").strip()
+            if content:
+                text_parts.append(content)
+        except Exception as e:
+            print(f"⚠️ Error reading {data_file.name}: {e}")
+
+    _text = "\n\n".join(text_parts)
+    print(f"📊 Total Combined Dataset: {len(_text):,} characters from {len(DATA_FILES)} .txt files in {target_data_dir.name}")
+    return _text
 
 # -----------------------------
 # Paths & BPE Tokenizer Definition
@@ -194,11 +203,11 @@ if os.path.exists(VOCAB_PATH) and os.path.exists(MERGES_PATH):
         print(f"✅ Loaded existing BPE tokenizer (vocab size={len(tokenizer.vocab)})")
     except Exception as e:
         print(f"⚠️ Failed to load BPE tokenizer, training from scratch: {e}")
-        tokenizer.train(text, target_vocab_size)
+        tokenizer.train(load_text(), target_vocab_size)
         tokenizer.save(VOCAB_PATH, MERGES_PATH)
 else:
     print("Training BPE tokenizer...")
-    tokenizer.train(text, target_vocab_size)
+    tokenizer.train(load_text(), target_vocab_size)
     tokenizer.save(VOCAB_PATH, MERGES_PATH)
 
 vocab_size = len(tokenizer.vocab)
@@ -207,26 +216,31 @@ BOS_ID = tokenizer.stoi['[BOS]']
 EOS_ID = tokenizer.stoi['[EOS]']
 
 # -----------------------------
-# Train and Validation Splits (from ipynb Cell 2)
+# Lazy Train and Validation Splits
 # -----------------------------
-data = torch.tensor(tokenizer.encode(text), dtype=torch.long)
-n_train = int(0.9 * len(data))
-train_data = data[:n_train]
-val_data = data[n_train:]
+def _get_train_val_data():
+    global _train_data, _val_data
+    if _train_data is None:
+        txt = load_text()
+        data = torch.tensor(tokenizer.encode(txt), dtype=torch.long)
+        n_train = int(0.9 * len(data))
+        _train_data = data[:n_train]
+        _val_data = data[n_train:]
+    return _train_data, _val_data
 
-# Dynamic batch sampling (from ipynb Cell 2)
+# Dynamic batch sampling
 device_data_cache = {}
 
 def get_batch(split):
     # Dynamic imports from model.py to avoid circular dependency
     from model import HYPERPARAMITER
-    global train_data, val_data
+    tr, val = _get_train_val_data()
     
     # Move training/validation data to device once and cache it
     if HYPERPARAMITER.device not in device_data_cache:
         device_data_cache[HYPERPARAMITER.device] = {
-            'train': train_data.to(HYPERPARAMITER.device),
-            'val': val_data.to(HYPERPARAMITER.device)
+            'train': tr.to(HYPERPARAMITER.device),
+            'val': val.to(HYPERPARAMITER.device)
         }
         
     data_split = device_data_cache[HYPERPARAMITER.device]['train'] if split == 'train' else device_data_cache[HYPERPARAMITER.device]['val']
@@ -241,7 +255,7 @@ def get_batch(split):
     y = data_split[indices + 1]
     return x, y
 
-# Loss estimation helper (from ipynb Cell 2)
+# Loss estimation helper
 @torch.no_grad()
 def estimate_loss(model):
     from model import HYPERPARAMITER
@@ -258,16 +272,15 @@ def estimate_loss(model):
     model.train() # Reactivate dropout training configurations
     return out
 
-# Save config
-from model import HYPERPARAMITER
-config = {
-    "vocab_size": vocab_size,
-    "block_size": HYPERPARAMITER.block_size,
-    "batch_size": HYPERPARAMITER.batch_size,
-    "device": str(HYPERPARAMITER.device),
-}
-with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-    json.dump(config, f, indent=2)
+# Module level dynamic attributes for lazy compatibility
+def __getattr__(name):
+    if name == "text":
+        return load_text()
+    elif name == "train_data":
+        tr, _ = _get_train_val_data()
+        return tr
+    elif name == "val_data":
+        _, val = _get_train_val_data()
+        return val
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
-print(f"✅ Saved character vocab (size={vocab_size}) to {VOCAB_PATH}")
-print(f"✅ Saved config to {CONFIG_PATH}")

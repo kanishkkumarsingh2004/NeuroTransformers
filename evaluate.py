@@ -81,8 +81,7 @@ def main():
     print(f"Evaluation interval: {HYPERPARAMITER.eval_interval}")
     print(f"Evaluation iterations per split: {HYPERPARAMITER.eval_iters}\n")
 
-    model = MiniLanguageModel(vocab_size=vocab_size).to(HYPERPARAMITER.device)
-    loaded = load_checkpoint(model)
+    model, loaded = load_checkpoint()
     total_params, trainable_params = count_parameters(model)
     non_trainable_params = total_params - trainable_params
     estimated_size = total_params * 4
