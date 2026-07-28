@@ -1,71 +1,132 @@
 import os
+import math
 import torch
 from tqdm import tqdm
-from model import MiniLanguageModel, HYPERPARAMITER
+from model import ModernLLM, ModelConfig, HYPERPARAMITER
 from data import get_batch, estimate_loss, vocab_size, train_data
 
-MODEL_PATH = HYPERPARAMITER.model_path
+# -----------------------------
+# Configuration & Device
+# -----------------------------
+DEVICE = getattr(HYPERPARAMITER, "device", "cuda" if torch.cuda.is_available() else "cpu")
+MODEL_PATH = getattr(HYPERPARAMITER, "model_path", os.path.join(os.path.dirname(__file__), "model", "transformer.pt"))
 
-# Print device status & enable CUDA speedups
-print(f"🚀 Starting simple & efficient training on {HYPERPARAMITER.device.upper()}")
-if HYPERPARAMITER.device == 'cuda' and torch.cuda.is_available():
+print(f"🚀 Starting modern LLM training pipeline on: {DEVICE.upper()}")
+
+if "cuda" in str(DEVICE) and torch.cuda.is_available():
     print(f"🎮 GPU: {torch.cuda.get_device_name(0)}")
     torch.cuda.empty_cache()
     torch.backends.cudnn.benchmark = True
-    if hasattr(torch, 'set_float32_matmul_precision'):
-        torch.set_float32_matmul_precision('high')
+    if hasattr(torch, "set_float32_matmul_precision"):
+        torch.set_float32_matmul_precision("high")
 
-# Instantiate Model
-model = MiniLanguageModel(vocab_size=vocab_size).to(HYPERPARAMITER.device)
-print(f"📊 Model Parameters: {sum(p.numel() for p in model.parameters()):,}")
+# Initialize Model Architecture Config
+config = ModelConfig(
+    vocab_size=vocab_size,
+    dim=getattr(HYPERPARAMITER, "dim", getattr(HYPERPARAMITER, "n_embd", 512)),
+    n_layers=getattr(HYPERPARAMITER, "n_layers", getattr(HYPERPARAMITER, "n_layer", 8)),
+    n_heads=getattr(HYPERPARAMITER, "n_heads", getattr(HYPERPARAMITER, "n_head", 8)),
+    n_kv_heads=getattr(HYPERPARAMITER, "n_kv_heads", getattr(HYPERPARAMITER, "n_head", 8)),
+    max_seq_len=getattr(HYPERPARAMITER, "max_seq_len", getattr(HYPERPARAMITER, "block_size", 256)),
+    dropout=getattr(HYPERPARAMITER, "dropout", 0.1),
+)
 
-# Select optimal precision: bfloat16 for RTX 40-series Tensor Cores (fast & no NaN overflow)
-use_cuda = HYPERPARAMITER.device == 'cuda' and torch.cuda.is_available()
+# Instantiate Modern LLM Architecture
+model = ModernLLM(config).to(DEVICE)
+total_params = sum(p.numel() for p in model.parameters())
+print(f"📊 Model Total Parameters: {total_params:,} ({total_params/1e6:.2f}M)")
+
+# Precision & AMP setup
+use_cuda = "cuda" in str(DEVICE) and torch.cuda.is_available()
 use_bf16 = use_cuda and torch.cuda.is_bf16_supported()
 amp_dtype = torch.bfloat16 if use_bf16 else torch.float16
 
-# Fused AdamW optimizer for CUDA kernel fusion speedup
+# Fused AdamW optimizer
 use_fused = use_cuda
+learning_rate = getattr(HYPERPARAMITER, "learning_rate", 5e-4)
 try:
-    optimizer = torch.optim.AdamW(model.parameters(), lr=HYPERPARAMITER.learning_rate, weight_decay=0.01, fused=use_fused)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.01, fused=use_fused)
 except Exception:
-    optimizer = torch.optim.AdamW(model.parameters(), lr=HYPERPARAMITER.learning_rate, weight_decay=0.01)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.01)
 
 scaler = torch.amp.GradScaler("cuda") if (use_cuda and amp_dtype == torch.float16) else None
 
-# Load checkpoint if matching
+# Checkpoint Loading (Resume training if available)
+start_epoch = 0
+best_val_loss = float("inf")
+
 if os.path.exists(MODEL_PATH):
     try:
-        checkpoint = torch.load(MODEL_PATH, map_location=HYPERPARAMITER.device)
+        checkpoint = torch.load(MODEL_PATH, map_location=DEVICE)
         state_dict = checkpoint["model_state"] if isinstance(checkpoint, dict) and "model_state" in checkpoint else checkpoint
         model.load_state_dict(state_dict, strict=False)
-        print(f"✅ Loaded pretrained checkpoint from {MODEL_PATH}")
+        
+        if isinstance(checkpoint, dict):
+            if "optimizer_state" in checkpoint:
+                try:
+                    optimizer.load_state_dict(checkpoint["optimizer_state"])
+                except Exception:
+                    pass
+            if "scaler_state" in checkpoint and scaler is not None:
+                try:
+                    scaler.load_state_dict(checkpoint["scaler_state"])
+                except Exception:
+                    pass
+            start_epoch = checkpoint.get("epoch", 0)
+            best_val_loss = checkpoint.get("val_loss", float("inf"))
+            
+        print(f"✅ Loaded checkpoint from {MODEL_PATH} (Epoch {start_epoch}, Best Val Loss: {best_val_loss:.4f})")
     except Exception as e:
-        print(f"ℹ️ Starting fresh training ({e})")
+        print(f"ℹ️ Could not load checkpoint ({e}). Starting fresh training.")
 
-# Calculate clean step counts per epoch
-steps_per_epoch = min(500, max(10, len(train_data) // (HYPERPARAMITER.batch_size * HYPERPARAMITER.block_size)))
-epochs = HYPERPARAMITER.epochs
+# Training Schedule Setup
+batch_size = getattr(HYPERPARAMITER, "batch_size", 64)
+block_size = getattr(config, "max_seq_len", 256)
+epochs = getattr(HYPERPARAMITER, "epochs", 5)
+steps_per_epoch = min(500, max(10, len(train_data) // (batch_size * block_size)))
+total_steps = epochs * steps_per_epoch
 
-print(f"\n⚙️ Training Config: {epochs} Epochs × {steps_per_epoch} Steps | Batch Size: {HYPERPARAMITER.batch_size} | Block Size: {HYPERPARAMITER.block_size} | Precision: {'bfloat16' if use_bf16 else ('float16' if use_cuda else 'fp32')}\n")
+# Cosine Learning Rate Schedule with Warmup
+warmup_steps = int(total_steps * 0.1)  # 10% warmup
+min_lr = learning_rate * 0.1
 
-best_val_loss = float('inf')
+def get_lr(step):
+    if step < warmup_steps:
+        return learning_rate * (step + 1) / (warmup_steps + 1)
+    if step > total_steps:
+        return min_lr
+    decay_ratio = (step - warmup_steps) / (total_steps - warmup_steps)
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
+    return min_lr + coeff * (learning_rate - min_lr)
 
-for epoch in range(epochs):
+print(f"\n⚙️ Config: {epochs} Epochs | {steps_per_epoch} Steps/Epoch | Total Steps: {total_steps}")
+print(f"   • Batch Size: {batch_size} | Block Size: {block_size}")
+print(f"   • Learning Rate: {learning_rate} (Warmup Steps: {warmup_steps})")
+print(f"   • Precision: {'bfloat16' if use_bf16 else ('float16' if use_cuda else 'fp32')}\n")
+
+# Main Training Loop
+global_step = start_epoch * steps_per_epoch
+
+for epoch in range(start_epoch, epochs):
     model.train()
     running_loss = 0.0
     pbar = tqdm(range(steps_per_epoch), desc=f"Epoch {epoch+1}/{epochs}", unit="step")
-    
+
     for step in pbar:
-        # Sample batch
-        xb, yb = get_batch('train')
-        
-        # Mixed precision forward pass
+        # Dynamic Learning Rate Update
+        current_lr = get_lr(global_step)
+        for param_group in optimizer.param_groups:
+            param_group["lr"] = current_lr
+
+        # Sample Batch from CUDA Cache
+        xb, yb = get_batch("train")
+
+        # Mixed Precision Forward Pass
         with torch.amp.autocast(device_type="cuda", enabled=use_cuda, dtype=amp_dtype):
-            logits, loss = model(xb, yb)
-        
+            logits, loss, _ = model(xb, yb)
+
         optimizer.zero_grad(set_to_none=True)
-        
+
         if scaler is not None:
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
@@ -76,34 +137,57 @@ for epoch in range(epochs):
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
-            
+
         running_loss += loss.item()
-        pbar.set_postfix({"Loss": f"{loss.item():.4f}"})
-        
-    avg_train_loss = running_loss / steps_per_epoch
-    
-    # Evaluate loss at end of epoch
+        global_step += 1
+        pbar.set_postfix({"Loss": f"{loss.item():.4f}", "LR": f"{current_lr:.2e}"})
+
+    # Evaluate Validation Loss at End of Epoch
     losses = estimate_loss(model)
     print(f"\n📊 Epoch {epoch+1}/{epochs} Summary:")
     print(f"   • Train Loss: {losses['train']:.4f}")
     print(f"   • Val Loss:   {losses['val']:.4f}")
-    
-    if losses['val'] < best_val_loss:
-        best_val_loss = losses['val']
+
+    # --------------------------------------------------
+    # Checkpoint Persistence & Saving
+    # --------------------------------------------------
+    # Always update resume checkpoint (for recovery if interrupted)
+    resume_path = os.path.join(os.path.dirname(MODEL_PATH), "resume_checkpoint.pt")
+    torch.save({
+        "model_state": model.state_dict(),
+        "optimizer_state": optimizer.state_dict(),
+        "scaler_state": scaler.state_dict() if scaler is not None else None,
+        "epoch": epoch + 1,
+        "val_loss": losses["val"],
+        "config": {
+            "vocab_size": vocab_size,
+            "dim": config.dim,
+            "n_layers": config.n_layers,
+            "n_heads": config.n_heads,
+            "n_kv_heads": config.n_kv_heads,
+            "max_seq_len": config.max_seq_len,
+        }
+    }, resume_path)
+
+    # Save lightweight production model ONLY when validation loss improves
+    if losses["val"] < best_val_loss:
+        best_val_loss = losses["val"]
         os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
+        
+        # Production Checkpoint (~50% smaller file size, no optimizer bloat)
         torch.save({
             "model_state": model.state_dict(),
-            "optimizer_state": optimizer.state_dict(),
             "config": {
                 "vocab_size": vocab_size,
-                "n_embd": HYPERPARAMITER.n_embd,
-                "n_head": HYPERPARAMITER.n_head,
-                "n_layer": HYPERPARAMITER.n_layer,
-                "block_size": HYPERPARAMITER.block_size,
-                "val_loss": best_val_loss,
+                "dim": config.dim,
+                "n_layers": config.n_layers,
+                "n_heads": config.n_heads,
+                "n_kv_heads": config.n_kv_heads,
+                "max_seq_len": config.max_seq_len,
             }
         }, MODEL_PATH)
-        print(f"   ✅ Saved best checkpoint to {MODEL_PATH}")
+        
+        print(f"   ✅ Saved best production checkpoint to {MODEL_PATH} (Val Loss: {best_val_loss:.4f})")
     print()
 
 print(f"🎉 Training Complete! Best Validation Loss: {best_val_loss:.4f}\n")

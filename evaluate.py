@@ -1,10 +1,16 @@
 import os
 import torch
-from model import MiniLanguageModel, HYPERPARAMITER
-from data import tokenizer, vocab_size, train_data
+from model import ModernLLM, ModelConfig, HYPERPARAMITER
+from data import tokenizer, get_batch, estimate_loss
 
-MODEL_DIR = "model"
-MODEL_PATH = os.path.join(MODEL_DIR, "transformer.pt")
+# -----------------------------
+# Configuration & Device
+# -----------------------------
+DEVICE = getattr(HYPERPARAMITER, "device", "cuda" if torch.cuda.is_available() else "cpu")
+MODEL_DIR = getattr(HYPERPARAMITER, "model_dir", os.path.join(os.path.dirname(__file__), "model"))
+MODEL_PATH = getattr(HYPERPARAMITER, "model_path", os.path.join(MODEL_DIR, "transformer.pt"))
+VOCAB_PATH = getattr(HYPERPARAMITER, "vocab_path", os.path.join(MODEL_DIR, "vocab.json"))
+MERGES_PATH = getattr(HYPERPARAMITER, "merges_path", os.path.join(MODEL_DIR, "merges.txt"))
 
 
 def format_int(value):
@@ -15,111 +21,180 @@ def format_bytes(value):
     return f"{value / 1024**2:.2f} MB"
 
 
+def format_params(value):
+    """Formats parameter count into Millions (M), Billions (B), Trillions (T), and Crores (Cr)."""
+    val = float(value)
+    formatted = f"{value:,}"
+    
+    parts = []
+    if val >= 1e12:
+        parts.append(f"{val / 1e12:.3f} Trillion (T)")
+    elif val >= 1e9:
+        parts.append(f"{val / 1e9:.3f} Billion (B)")
+    elif val >= 1e6:
+        parts.append(f"{val / 1e6:.2f} Million (M)")
+    
+    if val >= 1e7:
+        parts.append(f"{val / 1e7:.2f} Crore (Cr)")
+
+    if parts:
+        return f"{formatted}  -->  [{' | '.join(parts)}]"
+    return formatted
+
+
 def count_parameters(model):
     total = sum(p.numel() for p in model.parameters())
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     return total, trainable
 
 
-def load_checkpoint():
-    model_path = HYPERPARAMITER.model_path if os.path.exists(HYPERPARAMITER.model_path) else os.path.join(HYPERPARAMITER.model_dir, "transformer.pt")
-    if not os.path.exists(model_path):
-        print(f"Warning: checkpoint not found at {model_path}. Using default initialized model weights.")
-        model = MiniLanguageModel(vocab_size=vocab_size).to(HYPERPARAMITER.device)
-        return model, False
-
-    checkpoint = torch.load(model_path, map_location=HYPERPARAMITER.device)
-    config = checkpoint.get("config", {}) if isinstance(checkpoint, dict) else {}
-    model_state = checkpoint["model_state"] if isinstance(checkpoint, dict) and "model_state" in checkpoint else checkpoint
-
-    n_embd = config.get("n_embd")
-    n_head = config.get("n_head")
-    n_layer = config.get("n_layer")
-
-    if n_embd is None and "token_embedding_table.weight" in model_state:
-        n_embd = model_state["token_embedding_table.weight"].shape[1]
-    if n_layer is None and any(k.startswith("blocks.") for k in model_state):
-        n_layer = max(int(k.split('.')[1]) for k in model_state if k.startswith("blocks.")) + 1
-
-    model = MiniLanguageModel(
-        vocab_size=vocab_size,
-        n_embd=n_embd,
-        n_head=n_head,
-        n_layer=n_layer
-    ).to(HYPERPARAMITER.device)
-
-    saved_vocab_size = model_state["token_embedding_table.weight"].shape[0]
-    if saved_vocab_size != vocab_size:
-        print(f"-> Saved vocab size ({saved_vocab_size}) differs from current ({vocab_size}). Resizing embeddings...")
-        model.resize_token_embeddings(saved_vocab_size)
-        model.load_state_dict(model_state)
-        model.resize_token_embeddings(vocab_size)
+def load_tokenizer_without_retraining():
+    """Loads existing tokenizer files without retraining or dataset rebuilds."""
+    if os.path.exists(VOCAB_PATH) and os.path.exists(MERGES_PATH):
+        try:
+            tokenizer.load(VOCAB_PATH, MERGES_PATH)
+            print(f"✅ Tokenizer loaded successfully from disk (Vocab size: {len(tokenizer.vocab)}).")
+        except Exception as e:
+            print(f"⚠️ Error loading tokenizer files from {VOCAB_PATH}: {e}")
     else:
-        model.load_state_dict(model_state)
-    return model, True
+        print(f"⚠️ Tokenizer files not found at {VOCAB_PATH}. Using default initialized tokenizer in memory.")
+
+
+def load_checkpoint():
+    """Loads model weights and config from the saved checkpoint."""
+    if not os.path.exists(MODEL_PATH):
+        print(f"⚠️ Warning: Checkpoint not found at '{MODEL_PATH}'. Using default initialized model weights.")
+        config = ModelConfig(
+            vocab_size=len(tokenizer.vocab),
+            dim=getattr(HYPERPARAMITER, "dim", 512),
+            n_layers=getattr(HYPERPARAMITER, "n_layers", getattr(HYPERPARAMITER, "n_layer", 8)),
+            n_heads=getattr(HYPERPARAMITER, "n_heads", getattr(HYPERPARAMITER, "n_head", 8)),
+            max_seq_len=getattr(HYPERPARAMITER, "max_seq_len", getattr(HYPERPARAMITER, "block_size", 256)),
+        )
+        model = ModernLLM(config).to(DEVICE)
+        return model, config, False
+
+    print(f"📂 Loading checkpoint from '{MODEL_PATH}'...")
+    checkpoint = torch.load(MODEL_PATH, map_location=DEVICE)
+
+    if isinstance(checkpoint, dict) and "model_state" in checkpoint:
+        model_state = checkpoint["model_state"]
+        saved_config = checkpoint.get("config", None)
+    else:
+        model_state = checkpoint
+        saved_config = None
+
+    if isinstance(saved_config, ModelConfig):
+        config = saved_config
+    elif isinstance(saved_config, dict) and saved_config:
+        config = ModelConfig(**saved_config)
+    else:
+        v_size = len(tokenizer.vocab)
+        if "tok_embeddings.weight" in model_state:
+            v_size = model_state["tok_embeddings.weight"].shape[0]
+            emb_dim = model_state["tok_embeddings.weight"].shape[1]
+        elif "token_embedding_table.weight" in model_state:
+            v_size = model_state["token_embedding_table.weight"].shape[0]
+            emb_dim = model_state["token_embedding_table.weight"].shape[1]
+        else:
+            emb_dim = getattr(HYPERPARAMITER, "dim", getattr(HYPERPARAMITER, "n_embd", 512))
+
+        config = ModelConfig(
+            vocab_size=v_size,
+            dim=emb_dim,
+            n_layers=getattr(HYPERPARAMITER, "n_layers", getattr(HYPERPARAMITER, "n_layer", 8)),
+            n_heads=getattr(HYPERPARAMITER, "n_heads", getattr(HYPERPARAMITER, "n_head", 8)),
+            max_seq_len=getattr(HYPERPARAMITER, "max_seq_len", getattr(HYPERPARAMITER, "block_size", 256)),
+        )
+
+    model = ModernLLM(config).to(DEVICE)
+
+    try:
+        model.load_state_dict(model_state, strict=False)
+        print("✅ Model weights loaded successfully.")
+    except Exception as e:
+        print(f"⚠️ Warning loading state dict: {e}")
+
+    return model, config, True
 
 
 def main():
-    print("=== Model Evaluation ===")
-    print(f"Device: {HYPERPARAMITER.device}")
-    print(f"Vocab size: {format_int(vocab_size)}")
-    print(f"Block size: {HYPERPARAMITER.block_size}")
-    print(f"Embedding dimension: {HYPERPARAMITER.n_embd}")
-    print(f"Number of attention heads: {HYPERPARAMITER.n_head}")
-    print(f"Number of transformer layers: {HYPERPARAMITER.n_layer}")
-    print(f"Dropout: {HYPERPARAMITER.dropout}")
-    print(f"Batch size: {HYPERPARAMITER.batch_size}")
-    print(f"Learning rate: {HYPERPARAMITER.learning_rate}")
-    steps_per_epoch = max(1, len(train_data) // HYPERPARAMITER.batch_size)
-    print(f"Epochs: {HYPERPARAMITER.epochs}")
-    print(f"Steps per epoch: {steps_per_epoch}")
-    print(f"Data folder: {HYPERPARAMITER.data_dir}")
-    data_files = sorted([f for f in os.listdir(HYPERPARAMITER.data_dir) if f.endswith('.txt')])
-    print(f"Data files: {', '.join(data_files) if data_files else 'none found'}")
-    print(f"Model path: {HYPERPARAMITER.model_path}")
-    print(f"Max training iterations: {HYPERPARAMITER.max_iters}")
-    print(f"Evaluation interval: {HYPERPARAMITER.eval_interval}")
-    print(f"Evaluation iterations per split: {HYPERPARAMITER.eval_iters}\n")
+    print("==========================================")
+    print("         LLM MODEL EVALUATION             ")
+    print("==========================================")
 
-    model, loaded = load_checkpoint()
+    # 1. Load Tokenizer strictly from existing files
+    load_tokenizer_without_retraining()
+    current_vocab_size = len(tokenizer.vocab)
+
+    # 2. Load Model Checkpoint
+    model, config, loaded = load_checkpoint()
+    model.eval()
+
+    # 3. Print Hyperparameters & Configuration
+    block_size = getattr(config, "max_seq_len", getattr(HYPERPARAMITER, "block_size", 256))
+    batch_size = getattr(HYPERPARAMITER, "batch_size", 64)
+
+    print("\n=== Architectural Configuration ===")
+    print(f"Device:                      {DEVICE}")
+    print(f"Vocabulary Size:             {format_int(current_vocab_size)}")
+    print(f"Max Sequence Length (Block): {block_size}")
+    print(f"Embedding Dimension (dim):   {config.dim}")
+    print(f"Attention Heads:             {config.n_heads}")
+    print(f"KV Attention Heads (GQA):    {config.n_kv_heads}")
+    print(f"Transformer Layers:          {config.n_layers}")
+    print(f"Hidden Dimension (SwiGLU):   {config.hidden_dim}")
+    print(f"Batch Size:                  {batch_size}")
+    print(f"Model Path:                  {MODEL_PATH}")
+
+    # 4. Parameter Counts
     total_params, trainable_params = count_parameters(model)
     non_trainable_params = total_params - trainable_params
-    estimated_size = total_params * 4
+    estimated_size = total_params * 4  # float32
 
-    print("=== Parameter Summary ===")
-    print(f"Total parameters: {format_int(total_params)}")
-    print(f"Trainable parameters: {format_int(trainable_params)}")
-    print(f"Non-trainable parameters: {format_int(non_trainable_params)}")
-    print(f"Estimated model size (float32): {format_bytes(estimated_size)}")
-    print(f"Estimated model size (float16): {format_bytes(estimated_size / 2)}")
+    print("\n=== Parameter Summary ===")
+    print(f"Total Parameters:            {format_params(total_params)}")
+    print(f"Trainable Parameters:        {format_params(trainable_params)}")
+    print(f"Non-Trainable Parameters:    {format_params(non_trainable_params)}")
+    print(f"Estimated VRAM (FP32):       {format_bytes(estimated_size)}")
+    print(f"Estimated VRAM (FP16/BF16):  {format_bytes(estimated_size / 2)}")
 
-    embedding_params = sum(p.numel() for p in model.token_embedding_table.parameters())
-    position_params = sum(p.numel() for p in model.position_embedding_table.parameters())
-    head_params = sum(p.numel() for p in model.blocks.parameters())
-    lm_head_params = sum(p.numel() for p in model.lm_head.parameters())
+    # Module Parameter Counts for ModernLLM
+    print("\n=== Sub-Module Breakdown ===")
+    if hasattr(model, "tok_embeddings"):
+        tok_params = sum(p.numel() for p in model.tok_embeddings.parameters())
+        layer_params = sum(p.numel() for p in model.layers.parameters())
+        out_params = sum(p.numel() for p in model.output.parameters())
+        print(f"Token Embeddings:            {format_params(tok_params)}")
+        print(f"Transformer Stack ({config.n_layers} blocks): {format_params(layer_params)}")
+        print(f"LM Head Output Layer:        {format_params(out_params)}")
 
-    print("\n=== Key Module Parameter Counts ===")
-    print(f"Token embedding parameters: {format_int(embedding_params)}")
-    print(f"Position embedding parameters: {format_int(position_params)}")
-    print(f"Transformer block parameters: {format_int(head_params)}")
-    print(f"Language model head parameters: {format_int(lm_head_params)}")
-
-    if loaded:
+    if loaded and os.path.exists(MODEL_PATH):
         checkpoint_size = os.path.getsize(MODEL_PATH)
-        print(f"\nCheckpoint path: {MODEL_PATH}")
-        print(f"Checkpoint file size: {format_bytes(checkpoint_size)}")
+        print(f"\nCheckpoint Size on Disk:     {format_bytes(checkpoint_size)}")
 
+    # 5. Model Evaluation (Loss & Sample Forward Pass)
+    print("\n=== Model Loss Evaluation ===")
+    try:
+        losses = estimate_loss(model)
+        print(f"Train Loss:                  {losses['train']:.4f}")
+        print(f"Validation Loss:             {losses['val']:.4f}")
+    except Exception as e:
+        print(f"⚠️ Could not compute dataset loss: {e}")
+
+    # Sample Forward Pass Test
     with torch.no_grad():
-        sample_input = torch.zeros((1, min(HYPERPARAMITER.block_size, 8)), dtype=torch.long, device=HYPERPARAMITER.device)
-        logits, loss = model(sample_input)
-        print(f"\nSample forward output shape: {tuple(logits.shape)}")
-        print(f"Sample forward loss (untrained/loaded): {loss.item() if loss is not None else 'None'}")
+        sample_input = torch.zeros((1, min(block_size, 8)), dtype=torch.long, device=DEVICE)
+        logits, loss, _ = model(sample_input)
+        print(f"Sample Forward Logits Shape: {tuple(logits.shape)}")
 
-    print("\nTokenizer special tokens:")
-    print("  [BOS]", tokenizer.stoi.get("[BOS]"))
-    print("  [EOS]", tokenizer.stoi.get("[EOS]"))
-    print("  [USER]", tokenizer.stoi.get("[USER]"))
-    print("  [ASSISTANT]", tokenizer.stoi.get("[ASSISTANT]"))
+    # 6. Special Tokens Inspection
+    print("\n=== Tokenizer Special Tokens ===")
+    for token in ["[PAD]", "[BOS]", "[EOS]", "[SYSTEM]", "[USER]", "[ASSISTANT]", "[THOUGHT]", "<|im_start|>", "<|im_end|>"]:
+        token_id = tokenizer.stoi.get(token, "Not Defined")
+        print(f"  {token:<15} -> ID: {token_id}")
+
+    print("\n✅ Evaluation Completed Successfully.")
 
 
 if __name__ == "__main__":

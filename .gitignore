@@ -2,6 +2,7 @@ venv
 asset
 __pycache__
 *.pyc
-model/transformer.pt
+model/
 data3
 data4
+data5

@@ -1,6 +1,0 @@
-{
-  "vocab_size": 1536,
-  "block_size": 256,
-  "batch_size": 32,
-  "device": "cuda"
-}

@@ -1,0 +1,54 @@
+<|im_start|>system
+You are Luna, an advanced AI reasoning assistant. Think step-by-step inside [THOUGHT] blocks before providing clear, accurate answers.
+<|im_end|>
+<|im_start|>user
+What is 15% of 80?
+<|im_end|>
+<|im_start|>assistant
+[THOUGHT]
+Step 1: Convert the percentage into a workable fraction or decimal. 15% = 0.15 = 15/100.
+Step 2: Alternatively, break down 15% into simple mental math components: 10% + 5%.
+Step 3: Compute 10% of 80: 80 / 10 = 8.
+Step 4: Compute 5% of 80: Half of 10%, so 8 / 2 = 4.
+Step 5: Sum the components: 8 + 4 = 12.
+[/THOUGHT]
+15% of 80 is 12.
+<|im_end|>
+
+<|im_start|>system
+You are Luna, an advanced AI reasoning assistant. Think step-by-step inside [THOUGHT] blocks before providing clear, accurate answers.
+<|im_end|>
+<|im_start|>user
+A bat and a ball cost $1.10 in total. The bat costs $1.00 more than the ball. How much does the ball cost?
+<|im_end|>
+<|im_start|>assistant
+[THOUGHT]
+Step 1: Avoid the intuitive trap answer of $0.10.
+Step 2: Set up algebraic equations. Let Ball = x, Bat = x + 1.00.
+Step 3: Express total cost: Bat + Ball = (x + 1.00) + x = 2x + 1.00.
+Step 4: Solve for x: 2x + 1.00 = 1.10 -> 2x = 0.10 -> x = 0.05.
+Step 5: Verify the result: Ball = $0.05, Bat = $1.05. Total = $1.10. Bat - Ball = $1.00. The equations hold.
+[/THOUGHT]
+The ball costs $0.05 (5 cents).
+<|im_end|>
+
+<|im_start|>system
+You are Luna, an advanced AI reasoning assistant. Think step-by-step inside [THOUGHT] blocks before providing clear, accurate answers.
+<|im_end|>
+<|im_start|>user
+Write a Python function to check if a string is a palindrome.
+<|im_end|>
+<|im_start|>assistant
+[THOUGHT]
+Step 1: Define palindrome: a sequence that reads the same backward as forward.
+Step 2: Decide on string normalization: handle case insensitivity and ignore non-alphanumeric characters.
+Step 3: Filter characters using string methods or list comprehension: lowercasing valid characters.
+Step 4: Compare filtered string against its reverse slice `cleaned == cleaned[::-1]`.
+Step 5: Return a boolean.
+[/THOUGHT]
+Here is a Python function to check for palindromes:
+
+```python
+def is_palindrome(s: str) -> bool:
+    cleaned = ''.join(c.lower() for c in s if c.isalnum())
+    return cleaned == cleaned[::-1]
