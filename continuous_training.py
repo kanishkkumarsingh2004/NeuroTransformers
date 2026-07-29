@@ -82,7 +82,7 @@ if os.path.exists(MODEL_PATH):
 # Training Schedule Setup
 batch_size = getattr(HYPERPARAMITER, "batch_size", 64)
 block_size = getattr(config, "max_seq_len", 256)
-epochs = getattr(HYPERPARAMITER, "epochs", 5)
+epochs = getattr(HYPERPARAMITER, "epochs", 20)
 steps_per_epoch = min(500, max(10, len(train_data) // (batch_size * block_size)))
 total_steps = epochs * steps_per_epoch
 

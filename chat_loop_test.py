@@ -3,9 +3,23 @@ import torch
 from model import ModernLLM, ModelConfig, HYPERPARAMITER
 from data import tokenizer, vocab_size
 
-# Device & Model Path
+# -----------------------------
+# Configuration & Setup
+# -----------------------------
 DEVICE = getattr(HYPERPARAMITER, "device", "cuda" if torch.cuda.is_available() else "cpu")
 MODEL_PATH = getattr(HYPERPARAMITER, "model_path", os.path.join(os.path.dirname(__file__), "model", "transformer.pt"))
+
+# High-Contrast ANSI Color Codes
+class Colors:
+    # 256-color slate grey for thoughts (works reliably across all dark/light terminals)
+    THOUGHT_GREY = '\033[38;5;244m'
+    # 256-color vibrant green for final answer response
+    ANSWER_GREEN = '\033[38;5;82m'
+    # Terminal UI Accent Colors
+    BOT_COLOR = '\033[38;5;45m'      # Cyan for BOT prefix
+    USER_COLOR = '\033[38;5;39m'     # Blue for YOU prompt
+    SYSTEM_COLOR = '\033[1;33m'      # Bold Yellow for System Prompt
+    RESET = '\033[0m'               # Reset terminal formatting
 
 # Special Tokens
 SYSTEM_TOKEN = "[SYSTEM]"
@@ -18,32 +32,19 @@ THOUGHT_END = "[/THOUGHT]"
 IM_START = "<|im_start|>"
 IM_END = "<|im_end|>"
 
-# ANSI Color Formatting
-class Colors:
-    GREY = '\033[90m'      # Dim grey for thoughts
-    NORMAL = '\033[0m'     # Normal text
-    BOLD = '\033[1m'       # Bold text
-    GREEN = '\033[92m'     # Green for BOT output
-    BLUE = '\033[94m'      # Blue for User prompt
-    YELLOW = '\033[93m'    # Yellow for system status
-
-
-# Obtain EOS Token ID dynamically
-EOS_ID = tokenizer.stoi.get(EOS_TOKEN, tokenizer.stoi.get(IM_END, None))
-if EOS_ID is None:
-    try:
-        eos_encoded = tokenizer.encode(EOS_TOKEN)
-        EOS_ID = eos_encoded[0] if eos_encoded else None
-    except Exception:
-        EOS_ID = None
-
-print(f"📌 Active EOS Token ID: {EOS_ID}")
+# Collect EOS IDs dynamically
+EOS_IDS = {
+    tokenizer.stoi.get(EOS_TOKEN),
+    tokenizer.stoi.get(IM_END),
+    tokenizer.stoi.get("[PAD]", 0)
+}
+EOS_IDS = {eid for eid in EOS_IDS if eid is not None}
 
 
 def load_model():
-    """Loads ModernLLM architecture checkpoint safely onto device."""
+    """Loads ModernLLM architecture checkpoint onto target device."""
     if not os.path.exists(MODEL_PATH):
-        print(f"❌ Error: Model checkpoint not found at {MODEL_PATH}. Train the model first using train.py.")
+        print(f"❌ Error: Model checkpoint not found at {MODEL_PATH}. Train the model first.")
         exit(1)
 
     print(f"📂 Loading checkpoint from {MODEL_PATH} on {DEVICE}...")
@@ -88,8 +89,8 @@ def load_model():
     return model, config
 
 
-def top_k_top_p_filtering(logits, top_k=40, top_p=0.9):
-    """Filter logits using Top-K and Nucleus (Top-P) sampling."""
+def top_k_top_p_filtering(logits, top_k=20, top_p=0.85):
+    """Filters logits using tighter Top-K and Nucleus sampling to eliminate gibberish."""
     if top_k > 0:
         values, _ = torch.topk(logits, min(top_k, logits.size(-1)))
         min_values = values[:, [-1]]
@@ -98,8 +99,7 @@ def top_k_top_p_filtering(logits, top_k=40, top_p=0.9):
     if top_p < 1.0:
         sorted_logits, sorted_indices = torch.sort(logits, descending=True)
         cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
-        
-        # Remove tokens with cumulative probability above threshold
+
         sorted_indices_to_remove = cumulative_probs > top_p
         sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
         sorted_indices_to_remove[..., 0] = 0
@@ -110,13 +110,15 @@ def top_k_top_p_filtering(logits, top_k=40, top_p=0.9):
     return logits
 
 
-def stream_generate(model, context_ids, block_size, temperature=0.7, top_k=40, top_p=0.9, max_new_tokens=300):
-    """Streams auto-regressive generation token by token with real-time thought formatting."""
+def stream_generate(model, context_ids, block_size, temperature=0.4, top_k=20, top_p=0.85, max_new_tokens=250):
+    """Streams tokens real-time: Thoughts in SLATE GREY, Final Output in VIBRANT GREEN."""
     out_ids = context_ids.clone()
-    generated_text = ""
-    in_thought = False
+    generated_buffer = ""
+    
+    in_thought = True
+    current_color = None
 
-    for _ in range(max_new_tokens):
+    for step in range(max_new_tokens):
         idx_cond = out_ids[:, -block_size:]
 
         with torch.no_grad():
@@ -128,44 +130,73 @@ def stream_generate(model, context_ids, block_size, temperature=0.7, top_k=40, t
         next_id = torch.multinomial(probs, num_samples=1)
         next_token_id = next_id.item()
 
-        if EOS_ID is not None and next_token_id == EOS_ID:
+        if next_token_id in EOS_IDS:
             break
 
         out_ids = torch.cat((out_ids, next_id), dim=1)
-        token = tokenizer.decode([next_token_id])
-        generated_text += token
+        token_text = tokenizer.decode([next_token_id])
+        generated_buffer += token_text
 
-        # State tracking for thought tags
-        if THOUGHT_START in token or "[THOUGHT]" in token:
+        # 1. State Tracking via Explicit Special Tags
+        if THOUGHT_START in token_text:
             in_thought = True
-        if THOUGHT_END in token or "[/THOUGHT]" in token or ASSISTANT_TOKEN in token:
+            token_text = token_text.replace(THOUGHT_START, "")
+        if THOUGHT_END in token_text:
             in_thought = False
+            token_text = token_text.replace(THOUGHT_END, "")
 
-        # Clean display tokens
-        display_token = token
-        for special in [BOS_TOKEN, EOS_TOKEN, SYSTEM_TOKEN, USER_TOKEN, ASSISTANT_TOKEN, IM_START, IM_END]:
-            display_token = display_token.replace(special, "")
+        # 2. Dynamic Line-based Thought vs Answer Transition Detection
+        if in_thought:
+            lines = generated_buffer.split("\n")
+            # If we hit empty space/blank lines after thought keywords, switch to answer mode
+            if len(lines) >= 2 and lines[-2].strip() != "" and lines[-1].strip() != "":
+                last_line = lines[-1].strip()
+                prev_line = lines[-2].strip()
+                
+                # Check if previous line finished thought phrasing and current line is the real answer
+                is_thought_phrase = any(
+                    k in prev_line for k in [
+                        "user is", "Category:", "Formulate", "Target query:",
+                        "Explain when", "Formulating a", "Define model"
+                    ]
+                )
+                is_answer_start = not any(
+                    k in last_line for k in [
+                        "user is", "Category:", "Formulate", "Target query:",
+                        "Explain when", "Formulating a", "Define model"
+                    ]
+                )
+                if is_thought_phrase and is_answer_start:
+                    in_thought = False
 
-        if display_token:
-            if in_thought or THOUGHT_START in token:
-                print(f"{Colors.GREY}{display_token}{Colors.NORMAL}", end="", flush=True)
-            else:
-                print(f"{Colors.GREEN}{display_token}{Colors.NORMAL}", end="", flush=True)
+        # 3. Strip Structural Control Tokens
+        for special in [BOS_TOKEN, EOS_TOKEN, SYSTEM_TOKEN, USER_TOKEN, ASSISTANT_TOKEN, IM_START, IM_END, THOUGHT_START, THOUGHT_END]:
+            token_text = token_text.replace(special, "")
 
-    print()
-    return out_ids, generated_text
+        # 4. Apply 256-Color ANSI Escape Codes
+        if token_text:
+            target_color = Colors.THOUGHT_GREY if in_thought else Colors.ANSWER_GREEN
+            
+            if current_color != target_color:
+                print(target_color, end="", flush=True)
+                current_color = target_color
+
+            print(token_text, end="", flush=True)
+
+    print(Colors.RESET, end="", flush=True)
+    return generated_buffer
 
 
-DEFAULT_SYSTEM_PROMPT = "You are Luna, a helpful AI reasoning assistant. Think step-by-step before providing clear answers."
+DEFAULT_SYSTEM_PROMPT = "You are Luna, an advanced AI reasoning assistant. Think step-by-step inside [THOUGHT] blocks before providing clear answers."
 
 
 def format_conversation(user_input, system_prompt=DEFAULT_SYSTEM_PROMPT, history=None):
-    """Formats inputs into structured ChatML multi-turn dialog format."""
-    conversation = f"{BOS_TOKEN}{SYSTEM_TOKEN}\n{system_prompt}\n"
+    """Formats dialog using standard ChatML schema."""
+    conversation = f"<|im_start|>system\n{system_prompt}\n<|im_end|>\n"
     if history:
         for turn_user, turn_assistant in history:
-            conversation += f"{USER_TOKEN}\n{turn_user}\n{ASSISTANT_TOKEN}\n{turn_assistant}{EOS_TOKEN}\n"
-    conversation += f"{USER_TOKEN}\n{user_input}\n{ASSISTANT_TOKEN}\n"
+            conversation += f"<|im_start|>user\n{turn_user}\n<|im_end|>\n<|im_start|>assistant\n{turn_assistant}\n<|im_end|>\n"
+    conversation += f"<|im_start|>user\n{user_input}\n<|im_end|>\n<|im_start|>assistant\n"
     return conversation
 
 
@@ -177,7 +208,7 @@ def run_chat_loop():
 
     print("\n" + "=" * 60)
     print("🤖 Interactive LLM Chat Ready")
-    print(f"📌 System Prompt: {Colors.BOLD}{system_prompt}{Colors.NORMAL}")
+    print(f"📌 System Prompt: {Colors.SYSTEM_COLOR}{system_prompt}{Colors.RESET}")
     print("💡 Commands:")
     print("   /system <prompt>  - Change system prompt")
     print("   /system          - View current system prompt")
@@ -187,7 +218,7 @@ def run_chat_loop():
 
     while True:
         try:
-            user_input = input(f"{Colors.BLUE}YOU: {Colors.NORMAL}").strip()
+            user_input = input(f"{Colors.USER_COLOR}YOU: {Colors.RESET}").strip()
         except (KeyboardInterrupt, EOFError):
             print("\n\nExiting chat loop. Goodbye!")
             break
@@ -203,9 +234,9 @@ def run_chat_loop():
             parts = user_input.split(" ", 1)
             if len(parts) > 1 and parts[1].strip():
                 system_prompt = parts[1].strip()
-                print(f"✅ Updated System Prompt: {Colors.BOLD}{system_prompt}{Colors.NORMAL}\n")
+                print(f"✅ Updated System Prompt: {Colors.SYSTEM_COLOR}{system_prompt}{Colors.RESET}\n")
             else:
-                print(f"📌 Current System Prompt: {Colors.BOLD}{system_prompt}{Colors.NORMAL}\n")
+                print(f"📌 Current System Prompt: {Colors.SYSTEM_COLOR}{system_prompt}{Colors.RESET}\n")
             continue
 
         if user_input.lower() in ["/reset", "/clear"]:
@@ -213,7 +244,6 @@ def run_chat_loop():
             print("🔄 Conversation history cleared!\n")
             continue
 
-        # Format chat prompt
         formatted_input = format_conversation(user_input, system_prompt=system_prompt, history=history)
 
         try:
@@ -222,7 +252,6 @@ def run_chat_loop():
                 print("❌ Error: Failed to tokenize user prompt.")
                 continue
 
-            # Crop long history to preserve context length limit
             if len(input_ids) > block_size:
                 input_ids = input_ids[-block_size:]
         except Exception as e:
@@ -231,25 +260,28 @@ def run_chat_loop():
 
         input_tensor = torch.tensor([input_ids], dtype=torch.long, device=DEVICE)
 
-        print(f"{Colors.GREEN}BOT: {Colors.NORMAL}", end="", flush=True)
+        print(f"{Colors.BOT_COLOR}BOT:{Colors.RESET} ", end="", flush=True)
         try:
-            with torch.no_grad():
-                _, generated_text = stream_generate(
-                    model,
-                    input_tensor,
-                    block_size=block_size,
-                    temperature=0.7,
-                    top_k=40,
-                    top_p=0.9
-                )
-                history.append((user_input, generated_text.strip()))
-                if len(history) > 10:
-                    history.pop(0)
+            # Generate response with tighter sampling parameters
+            generated_text = stream_generate(
+                model,
+                input_tensor,
+                block_size=block_size,
+                temperature=0.4,
+                top_k=20,
+                top_p=0.85
+            )
+            
+            clean_text = generated_text.replace("NeuroBot", "Luna")
+            history.append((user_input, clean_text.strip()))
+            
+            if len(history) > 10:
+                history.pop(0)
         except Exception as e:
             print(f"\n❌ Generation Error: {e}")
             continue
 
-        print()
+        print("\n")
 
 
 if __name__ == "__main__":

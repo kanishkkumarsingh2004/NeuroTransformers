@@ -21,7 +21,7 @@ class ModelConfig:
     vocab_path: str = os.path.join(model_dir, "vocab.json")
     merges_path: str = os.path.join(model_dir, "merges.txt")
     config_path: str = os.path.join(model_dir, "config.json")
-    data_dir: str = os.path.join(repo_path, "data4")
+    data_dir: str = os.path.join(repo_path, "data2")
 
     # Training Runtime Settings
     batch_size: int = 64
