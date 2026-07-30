@@ -24,7 +24,7 @@ class ModelConfig:
     data_dir: str = os.path.join(repo_path, "data2")
 
     # Training Runtime Settings
-    batch_size: int = 64
+    batch_size: int = 16
     block_size: int = 256  # Kept as alias for max_seq_len
     eval_iters: int = 20
     eval_interval: int = 200
@@ -204,11 +204,16 @@ class TransformerBlock(nn.Module):
         x: torch.Tensor,
         kv_cache: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
-        # Pre-LayerNorm Attention
-        attn_out, new_kv_cache = self.attn(self.input_layernorm(x), kv_cache=kv_cache)
+        # 1. Attention Block with Pre-RMSNorm and Residual Connection
+        normed_attn_in = self.input_layernorm(x)
+        attn_out, new_kv_cache = self.attn(normed_attn_in, kv_cache=kv_cache)
         x = x + attn_out
-        # Pre-LayerNorm Feed-Forward
-        x = x + self.ffn(self.post_attention_layernorm(x))
+
+        # 2. Feed-Forward Block with Pre-RMSNorm and Residual Connection
+        normed_ffn_in = self.post_attention_layernorm(x)
+        ffn_out = self.ffn(normed_ffn_in)
+        x = x + ffn_out
+
         return x, new_kv_cache
 
 

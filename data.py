@@ -3,6 +3,7 @@ import os
 import re
 from pathlib import Path
 import torch
+import PyPDF2
 
 # -----------------------------
 # Configuration Import & Fallbacks
@@ -16,8 +17,22 @@ os.makedirs(MODEL_DIR, exist_ok=True)
 VOCAB_PATH = getattr(HYPERPARAMITER, "vocab_path", os.path.join(MODEL_DIR, "vocab.json"))
 MERGES_PATH = getattr(HYPERPARAMITER, "merges_path", os.path.join(MODEL_DIR, "merges.txt"))
 
-# Target processing device (strictly uses HYPERPARAMITER.device)
+# Target processing device
 DEVICE = getattr(HYPERPARAMITER, "device", "cuda" if torch.cuda.is_available() else "cpu")
+
+# -----------------------------
+# PDF Helper (PyPDF2 Only)
+# -----------------------------
+def extract_text_from_pdf(pdf_path: Path) -> str:
+    """Extracts text strictly using PyPDF2."""
+    text_content = []
+    reader = PyPDF2.PdfReader(str(pdf_path))
+    for page in reader.pages:
+        extracted = page.extract_text()
+        if extracted:
+            text_content.append(extracted)
+    return "\n\n".join(text_content)
+
 
 # -----------------------------
 # Data Cleaning & Preprocessing Helpers
@@ -45,7 +60,7 @@ class DataPreprocessor:
 
 
 # -----------------------------
-# Lazy Dataset Loading
+# Lazy Dataset Loading (.txt + .pdf)
 # -----------------------------
 _text = None
 _train_data = None
@@ -61,38 +76,50 @@ def load_text():
     if not target_data_dir.is_dir():
         target_data_dir = Path(REPO_PATH) / "data"
 
-    DATA_FILES = sorted(target_data_dir.glob("**/*.txt"))
+    # Search recursively for both .txt and .pdf files
+    TXT_FILES = sorted(target_data_dir.glob("**/*.txt"))
+    PDF_FILES = sorted(target_data_dir.glob("**/*.pdf"))
+    ALL_FILES = TXT_FILES + PDF_FILES
 
-    if not DATA_FILES:
+    if not ALL_FILES:
         fallback_dir = Path(REPO_PATH) / "data"
         fallback_dir.mkdir(parents=True, exist_ok=True)
         fallback_path = fallback_dir / "chat_dataset.txt"
-        print("⚠️ No .txt files found. Downloading fallback TinyShakespeare dataset...")
+        print("⚠️ No .txt or .pdf files found. Downloading fallback TinyShakespeare dataset...")
         import urllib.request
         urllib.request.urlretrieve(
             "https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt",
             fallback_path
         )
-        DATA_FILES = [fallback_path]
+        ALL_FILES = [fallback_path]
 
-    print(f"📂 Loading data from {len(DATA_FILES)} file(s) in: {target_data_dir}")
+    print(f"📂 Loading data from {len(ALL_FILES)} file(s) ({len(TXT_FILES)} .txt, {len(PDF_FILES)} .pdf) in: {target_data_dir}")
     text_parts = []
-    for data_file in DATA_FILES:
+    
+    for data_file in ALL_FILES:
         try:
-            for encoding in ["utf-8", "utf-8-sig", "latin-1"]:
-                try:
-                    content = data_file.read_text(encoding=encoding)
-                    cleaned_content = DataPreprocessor.clean_text(content)
-                    if cleaned_content:
-                        text_parts.append(cleaned_content)
-                    break
-                except UnicodeDecodeError:
-                    continue
+            if data_file.suffix.lower() == ".pdf":
+                raw_text = extract_text_from_pdf(data_file)
+                cleaned_content = DataPreprocessor.clean_text(raw_text)
+                if cleaned_content:
+                    text_parts.append(cleaned_content)
+                    print(f"  📄 Read PDF: {data_file.name} ({len(cleaned_content):,} chars)")
+            else:
+                for encoding in ["utf-8", "utf-8-sig", "latin-1"]:
+                    try:
+                        content = data_file.read_text(encoding=encoding)
+                        cleaned_content = DataPreprocessor.clean_text(content)
+                        if cleaned_content:
+                            text_parts.append(cleaned_content)
+                            print(f"  📝 Read TXT: {data_file.name} ({len(cleaned_content):,} chars)")
+                        break
+                    except UnicodeDecodeError:
+                        continue
         except Exception as e:
             print(f"⚠️ Error reading {data_file.name}: {e}")
 
     _text = "\n\n".join(text_parts)
-    print(f"📊 Processed Dataset: {len(_text):,} clean characters across {len(DATA_FILES)} file(s)")
+    print(f"📊 Processed Dataset: {len(_text):,} clean characters across {len(ALL_FILES)} file(s)")
     return _text
 
 
@@ -286,7 +313,7 @@ def get_batch(split):
 
     tr, val = _get_train_val_data()
 
-    # Pre-load full split tensor to CUDA VRAM once to remove CPU->GPU transfer overhead
+    # Pre-load full split tensor to CUDA VRAM once
     if device not in device_data_cache:
         device_data_cache[device] = {
             "train": tr.to(device, non_blocking=True),
@@ -295,7 +322,6 @@ def get_batch(split):
 
     data_split = device_data_cache[device]["train"] if split == "train" else device_data_cache[device]["val"]
     
-    # Generate random batch slice offsets directly on CUDA memory
     max_idx = len(data_split) - block_size
     ix = torch.randint(max_idx, (batch_size,), device=device)
     indices = ix.unsqueeze(1) + torch.arange(block_size, device=device).unsqueeze(0)
