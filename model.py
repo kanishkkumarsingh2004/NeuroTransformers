@@ -21,10 +21,10 @@ class ModelConfig:
     vocab_path: str = os.path.join(model_dir, "vocab.json")
     merges_path: str = os.path.join(model_dir, "merges.txt")
     config_path: str = os.path.join(model_dir, "config.json")
-    data_dir: str = os.path.join(repo_path, "data2")
+    data_dir: str = os.path.join(repo_path, "data4")
 
     # Training Runtime Settings
-    batch_size: int = 16
+    batch_size: int = 32
     block_size: int = 256  # Kept as alias for max_seq_len
     eval_iters: int = 20
     eval_interval: int = 200
@@ -33,14 +33,14 @@ class ModelConfig:
 
     def __init__(
         self,
-        vocab_size: int = 32000,
+        vocab_size: int = 2048,
         dim: int = 512,
         n_layers: int = 8,
         n_heads: int = 8,
         n_kv_heads: Optional[int] = None,
         hidden_dim: Optional[int] = None,
-        max_seq_len: int = 2048,
-        dropout: float = 0.0,
+        max_seq_len: int = 512,
+        dropout: float = 0.1,
         norm_eps: float = 1e-5,
         rope_theta: float = 10000.0,
         tie_word_embeddings: bool = True,
@@ -126,6 +126,14 @@ class SwiGLUFeedForward(nn.Module):
         self.w3 = nn.Linear(config.dim, config.hidden_dim, bias=False)  # Up projection
         self.dropout = nn.Dropout(config.dropout)
 
+        # BUG FIX: _init_weights() below checks for this flag to apply
+        # GPT-2/nanoGPT-style depth scaling on residual-stream projections,
+        # but nothing ever set it -- the scaling never fired on any layer.
+        # w2 writes directly back into the residual stream, so it's the one
+        # that needs scaling down as depth grows (unscaled residual writes
+        # compound across layers and can destabilize deep stacks).
+        self.w2.NANOGPT_SCALE_INIT = 1
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # SwiGLU: (Swish(w1(x)) * w3(x)) -> w2
         return self.dropout(self.w2(F.silu(self.w1(x)) * self.w3(x)))
@@ -147,6 +155,10 @@ class GroupedQueryAttention(nn.Module):
         self.v_proj = nn.Linear(config.dim, self.n_kv_heads * self.head_dim, bias=False)
         self.out_proj = nn.Linear(self.n_heads * self.head_dim, config.dim, bias=False)
         self.resid_dropout = nn.Dropout(config.dropout)
+
+        # Same fix as SwiGLUFeedForward.w2 -- out_proj also writes directly
+        # into the residual stream and needs the depth-scaled init to fire.
+        self.out_proj.NANOGPT_SCALE_INIT = 1
 
     def forward(
         self,
@@ -293,11 +305,25 @@ class ModernLLM(nn.Module):
         max_new_tokens: int,
         temperature: float = 1.0,
         top_k: Optional[int] = None,
+        top_p: Optional[float] = None,
+        repetition_penalty: float = 1.0,
     ) -> torch.Tensor:
-        """Efficient auto-regressive generation using KV-Caching"""
+        """Efficient auto-regressive generation using KV-Caching.
+
+        top_p: nucleus sampling -- keep the smallest set of tokens whose
+        cumulative probability exceeds top_p, zero out the rest. Standard
+        in modern LLM inference (used alongside or instead of top_k)
+        because it adapts to how peaked/flat the distribution is at each
+        step, unlike a fixed top_k count.
+
+        repetition_penalty: >1.0 discourages repeating tokens already in
+        the sequence (divides their logits by the penalty before
+        sampling). Small models are especially prone to repetition loops,
+        so this matters more here than it would on a much larger model.
+        """
         self.eval()
         kv_caches = [None] * len(self.layers)
-        
+
         # Initial prefill pass
         logits, _, kv_caches = self(idx, kv_caches=kv_caches)
 
@@ -305,13 +331,31 @@ class ModernLLM(nn.Module):
             # Focus on the last token logits
             logits = logits[:, -1, :] / max(temperature, 1e-5)
 
+            if repetition_penalty != 1.0:
+                for b in range(idx.size(0)):
+                    seen = torch.unique(idx[b])
+                    seen_logits = logits[b, seen]
+                    logits[b, seen] = torch.where(
+                        seen_logits > 0, seen_logits / repetition_penalty, seen_logits * repetition_penalty
+                    )
+
             if top_k is not None:
                 v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
                 logits[logits < v[:, [-1]]] = -float("Inf")
 
+            if top_p is not None:
+                sorted_logits, sorted_idx = torch.sort(logits, descending=True, dim=-1)
+                cum_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+                sorted_mask = cum_probs > top_p
+                # Always keep at least the single most probable token, so we
+                # never zero out every candidate for a very peaked distribution.
+                sorted_mask[..., 0] = False
+                mask = torch.zeros_like(logits, dtype=torch.bool).scatter_(-1, sorted_idx, sorted_mask)
+                logits = logits.masked_fill(mask, -float("Inf"))
+
             probs = F.softmax(logits, dim=-1)
             idx_next = torch.multinomial(probs, num_samples=1)
-            
+
             idx = torch.cat((idx, idx_next), dim=1)
 
             # Subsequent decode passes only process the newest token using KV Cache
@@ -327,4 +371,18 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 # Aliases for legacy imports across training and evaluation scripts
 MiniLanguageModel = ModernLLM
 Decoder = ModernLLM
-HYPERPARAMITER = ModelConfig
+
+# BUG FIX: this used to be `HYPERPARAMITER = ModelConfig` (the class itself,
+# never instantiated). Every `getattr(HYPERPARAMITER, "vocab_size", ...)` /
+# `"dim"` / `"n_layers"` / `"n_heads"` / `"dropout"` / `"max_seq_len"` lookup
+# across the codebase was silently missing (those only exist on *instances*,
+# set in __init__) and quietly falling back to each call site's hardcoded
+# default instead of whatever you configured. Instantiating it here means
+# constructor defaults (and the env overrides below) actually take effect.
+HYPERPARAMITER = ModelConfig()
+
+# Allow the active dataset directory / checkpoint path to be chosen per
+# training run (e.g. `NEUROTRANSFORMERS_DATA_DIR=data3 python continuous_training.py`)
+# instead of hardcoding a single folder you have to hand-edit every session.
+HYPERPARAMITER.data_dir = os.environ.get("NEUROTRANSFORMERS_DATA_DIR", HYPERPARAMITER.data_dir)
+HYPERPARAMITER.model_path = os.environ.get("NEUROTRANSFORMERS_MODEL_PATH", HYPERPARAMITER.model_path)  

@@ -173,16 +173,16 @@ class BPETokenizer:
             self.vocab[new_id] = self.vocab[best_pair[0]] + self.vocab[best_pair[1]]
             
             new_ids = []
-            skip = False
-            for j in range(len(ids)):
-                if skip:
-                    skip = False
-                    continue
-                if j < len(ids) - 1 and (ids[j], ids[j + 1]) == best_pair:
+            p0, p1 = best_pair
+            j = 0
+            n = len(ids)
+            while j < n:
+                if j < n - 1 and ids[j] == p0 and ids[j + 1] == p1:
                     new_ids.append(new_id)
-                    skip = True
+                    j += 2
                 else:
                     new_ids.append(ids[j])
+                    j += 1
             ids = new_ids
 
         for idx, token_bytes in self.vocab.items():
